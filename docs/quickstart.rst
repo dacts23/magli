@@ -127,21 +127,47 @@ Observation weights (precision weights or down-weighted outliers, supported by b
 Formula syntax
 --------------
 
-Terms are separated by ``+``. Each term has the form ``type(args, kwargs)``.
+Terms are separated by ``+``. Each term has the form ``type(features, options)``, where
+features are 0-indexed column numbers. Both backends accept the Wood names (``k``, ``sp``) and
+the Eilers names (``n_splines``, ``lam``) as aliases.
 
-``s(feature, ...)`` for univariate splines
-   Accepts both Wood syntax (``k=10``, ``bs='cr'``, ``sp=0.5``) and Eilers-Marx syntax
-   (``n_splines=10``, ``lam=1.0``, ``constraint='mono_inc'``).
+``s(i, ...)``: univariate smooth
+   * ``k`` / ``n_splines`` (default 10): basis dimension (max flexibility).
+   * ``sp`` / ``lam``: fixed smoothing parameter; omit to estimate it (REML/GCV).
+   * ``bs`` (wood only, default ``'tp'``): ``tp``, ``ts``, ``cr``, ``cs``, ``cc``, ``ps``, ``cp``, ``bs``, ``re`` (random effects).
+   * ``m`` (wood only, ``ps``/``cp``/``bs`` bases): basis and penalty order, as in mgcv.
+   * ``knots`` (wood only): user-supplied knot locations.
+   * ``by`` (wood only): 0-indexed column index of a continuous varying-coefficient multiplier.
+   * ``constraint`` (eilers only): ``mono_inc``, ``mono_dec``, ``convex``, ``concave``, ``periodic``. The wood backend supports ``periodic`` only (fitted with a cyclic ``cc``/``cp`` basis).
+   * ``spline_order`` (eilers only, default 3): B-spline degree.
 
-``te(f1, f2, ...)`` for tensor-product interactions
-   ``te(0, 1, k=5, bs='cr')`` or ``te(0, 1, n_splines=5)``.
+``te(i, j, ...)``: full tensor product (main effects **and** interaction)
+   * ``k`` / ``n_splines`` (default 5): one int for all margins, or a list ``[5, 8]``.
+   * ``bs`` (wood only): one string or a list, one per margin.
+   * ``sp`` / ``lam``: fixed smoothing parameter(s), one per margin.
+   * ``m`` (wood only): penalty/basis order or list of orders per margin.
+   * ``knots`` (wood only): user-supplied knots per margin.
+   * ``by`` (wood only): varying-coefficient covariate column.
+   * Use ``te`` *instead of* ``s(i) + s(j)``. Combining them is collinear.
 
-``f(feature, ...)`` for categorical factors
-   ``f(2, coding='dummy')`` or ``f(2, coding='one-hot')``.
+``ti(i, j, ...)``: pure tensor interaction (wood backend only)
+   Same options as ``te``. Each margin is centred (sum-to-zero) before the product, so
+   the term contains only the interaction, ``(k_i - 1) * (k_j - 1)`` coefficients, like
+   mgcv's ``ti``. Use it with the main effects:
+   ``s(0) + s(1) + ti(0, 1)``, which gives an ANOVA-style decomposition.
 
-``l(feature, ...)`` for linear terms
-   ``l(3)`` (parametric unpenalized or ridge-penalized linear effect).
+``f(i, coding='dummy' | 'one-hot')``: categorical factor
+   ``dummy`` (wood default) drops the first level; ``one-hot`` (eilers default) keeps all
+   levels and is ridge-penalised.
 
+``l(i)``: linear term
+   Unpenalised by default; ``lam`` adds a ridge penalty (eilers backend).
+
+Model-level options in ``GAMCore`` (wood backend):
+   * ``select=True``: automatically substitutes shrinkage bases (``'ts'``, ``'cs'``) to penalize null spaces and shrink unneeded smooth terms to zero.
+   * ``predict(X, type='terms', se_fit=True)``: returns component fits and standard errors per term matching mgcv.
+
+Unknown options raise ``ValueError`` in both backends.
 
 Partial dependence, Decomposition & Diagnostics
 -----------------------------------------------

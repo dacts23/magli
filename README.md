@@ -141,10 +141,13 @@ weighted_model.fit(x, y, weights=w)
 
 | Term Syntax | Meaning | Example |
 | :--- | :--- | :--- |
-| `s(col, ...)` | Univariate smooth spline | `s(0, k=10, bs='cr')` or `s(0, n_splines=12, constraint='mono_inc')` |
-| `te(c1, c2, ...)` | Multidimensional tensor product | `te(0, 1, k=5, bs='cr')` |
+| `s(col, ...)` | Univariate smooth spline | `s(0, k=10, bs='cr')` or `s(0, by=1)` |
+| `te(c1, c2, ...)` | Full tensor product (main effects + interaction) | `te(0, 1, k=5, bs='cr')` |
+| `ti(c1, c2, ...)` | Pure interaction only, for use with `s()` main effects | `s(0) + s(1) + ti(0, 1)` |
 | `f(col, ...)` | Categorical factor | `f(2, coding='dummy')` or `f(2, coding='one-hot')` |
 | `l(col, ...)` | Parametric linear effect | `l(3)` |
+
+*Options: `k`/`n_splines` (basis size), `sp`/`lam` (fixed smoothing), `bs` (wood basis type), `m` (wood, `ps`/`cp`/`bs` bases), `by` (wood), `constraint` (eilers only; wood: `periodic`), `coding` (f only). See the [Quick Start](https://dacts23.github.io/magli/quickstart.html) for the full list.*
 
 *Note: Predictor variables are identified by 0-indexed column numbers in input arrays.*
 

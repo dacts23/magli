@@ -287,6 +287,8 @@ def instantiate_terms(
                 feats[0],
                 lam_val if lam_val is not None else 0.0,
             ))
+        elif t == 'ti':
+            raise ValueError("ti() is only supported by the 'wood' backend.")
         else:
             raise ValueError(f"Unknown term type: {t}")
 

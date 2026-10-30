@@ -1,8 +1,20 @@
 Changelog
 =========
 
-Unreleased
-----------
+Version 1.1.0
+-------------
+*Released 2026-10-30*
+
+* **mgcv Gaussian Inference & Term Parity (Wood backend)**:
+  - Added pure tensor interaction terms ``ti()`` with marginal centering for functional ANOVA decompositions (e.g. ``s(0) + s(1) + ti(0, 1)``).
+  - Ported Wood (2013) ``testStat`` approximate F/Chi-square tests and p-values matching R's ``summary.gam``.
+  - Implemented ``edf2`` (smoothing parameter uncertainty correction) for AIC degrees of freedom and Gaussian ML deviance scaling.
+  - Added varying-coefficient terms ``s(x, by=z)`` and ``te(x0, x1, by=z)`` with unconstrained bases.
+  - Added random effects smooths ``s(g, bs='re')`` without sum-to-zero identifiability constraints.
+  - Added ``m`` and ``knots`` options to ``te()`` and ``ti()``.
+  - Added ``select=True`` model selection in ``GAMCore`` to shrink null spaces via ``ts`` and ``cs`` bases.
+  - Added ``predict(type='terms', se_fit=True)`` and ``partial_dependence(..., se_fit=True)`` for per-term effect estimation and standard errors.
+  - Unsupported options now raise instead of being silently ignored: shape constraints other than ``periodic`` (use the eilers backend for ``mono_inc`` etc.) and ``m`` on bases that ignore it (``m`` is honored by ``ps``/``cp``/``bs`` only). ``fit_wood_engine`` no longer returns the stale ``aic``/``bic``/``loglik`` keys — use ``GAMCore.aic()``/``bic()``/``loglikelihood()``.
 
 * **Self-checking teaching notebooks** (documentation only, no library changes):
   two executed notebooks now walk through the mathematics and the workflow of

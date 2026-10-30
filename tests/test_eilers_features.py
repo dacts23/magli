@@ -198,6 +198,7 @@ def test_weighted_loglikelihood_includes_log_weights():
         m = LinGAM(n_splines=8, backend=backend).fit(x, y, weights=w)
         mu = m.predict(x)
         s = m.statistics_["scale"]
-        sigma = np.sqrt(s) if backend == "wood" else s
+        # wood follows mgcv: logLik uses the ML scale rss/n, not the REML/GCV scale estimate
+        sigma = np.sqrt(np.sum(w * (y - mu) ** 2) / len(y)) if backend == "wood" else s
         expected_ll = float(np.sum(stats.norm.logpdf(y, loc=mu, scale=sigma / np.sqrt(w))))
         assert np.isclose(m.loglikelihood(), expected_ll, atol=1e-10)

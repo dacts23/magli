@@ -565,6 +565,19 @@ def predict_smooth_basis(x: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
     raise ValueError(f"Unknown basis type bs='{bs}' in predict_smooth_basis.")
 
 
+def _pair_m(m: Any, default: Tuple[int, int]) -> Tuple[int, int]:
+    """Coerce m to a (basis, penalty) pair; a single int sets the penalty order."""
+    if m is None:
+        return default
+    if isinstance(m, (int, np.integer)):
+        return (default[0], int(m))
+    if isinstance(m, (tuple, list)) and len(m) == 2:
+        return (int(m[0]), int(m[1]))
+    raise ValueError(
+        f"m must be a single penalty order or a pair like {default}, got {m!r}."
+    )
+
+
 def build_smooth_basis(
     x: np.ndarray,
     bs: str = "tp",
@@ -575,26 +588,27 @@ def build_smooth_basis(
     """Dispatch to the requested basis constructor."""
     bs = bs.lower()
     if bs in ("tp", "ts"):
-        return build_tp_basis(
-            x, k=k, m=m if isinstance(m, int) else 2, shrink=(bs == "ts")
-        )
-    if bs in ("cr", "cs"):
+        if m is not None and m != 2:
+            raise ValueError(
+                f"m must be 2 (or omitted) for bs='{bs}': this thin plate "
+                "implementation uses a fixed 2nd-order penalty."
+            )
+        return build_tp_basis(x, k=k, m=2, shrink=(bs == "ts"))
+    if bs in ("cr", "cs", "cc"):
+        if m is not None:
+            raise ValueError(f"m is not supported for bs='{bs}'.")
+        if bs == "cc":
+            return build_cc_basis(x, k=k, knots=knots)
         return build_cr_basis(x, k=k, knots=knots, shrink=(bs == "cs"))
-    if bs == "cc":
-        return build_cc_basis(x, k=k, knots=knots)
     if bs == "ps":
-        return build_ps_basis(
-            x, k=k, knots=knots, m=m if isinstance(m, tuple) else (2, 2)
-        )
+        return build_ps_basis(x, k=k, knots=knots, m=_pair_m(m, (2, 2)))
     if bs == "cp":
-        return build_cp_basis(
-            x, k=k, knots=knots, m=m if isinstance(m, tuple) else (2, 2)
-        )
+        return build_cp_basis(x, k=k, knots=knots, m=_pair_m(m, (2, 2)))
     if bs in ("bs", "b"):
-        return build_bs_basis(
-            x, k=k, knots=knots, m=m if isinstance(m, tuple) else (3, 2)
-        )
+        return build_bs_basis(x, k=k, knots=knots, m=_pair_m(m, (3, 2)))
     if bs == "re":
+        if m is not None:
+            raise ValueError("m is not supported for bs='re'.")
         xu, inv_idx = np.unique(x, return_inverse=True)
         K = len(xu)
         return (

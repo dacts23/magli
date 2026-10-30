@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 from numpy.typing import ArrayLike
@@ -92,15 +92,53 @@ class _GAMBase:
             blocks.append(np.ones((len(x), 1), dtype=float))
         return np.hstack(blocks)
 
-    def predict(self, x: ArrayLike) -> np.ndarray:
-        """Predict target values for feature data x."""
+    def predict(
+        self,
+        x: ArrayLike,
+        type: str = "response",
+        se_fit: bool = False,
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
+        """Predict target values or term components for feature data x."""
         self._check_fitted()
         x_arr = np.asarray(x, dtype=float)
         if x_arr.ndim == 1:
             x_arr = x_arr.reshape(-1, 1)
-        return self._build_model_matrix(x_arr) @ self.coef_
 
-    def partial_dependence(self, term_idx: int, x: ArrayLike) -> np.ndarray:
+        cov = self.statistics_.get("cov")
+        if type == "terms":
+            n = len(x_arr)
+            terms_fit = np.zeros((n, len(self._terms)), dtype=float)
+            terms_se = (
+                np.zeros((n, len(self._terms)), dtype=float) if se_fit else None
+            )
+            for j, term in enumerate(self._terms):
+                B_j = term.build_columns(x_arr)
+                start, end = self._coef_slices[j]
+                terms_fit[:, j] = B_j @ self.coef_[start:end]
+                if se_fit and cov is not None:
+                    cov_j = cov[start:end, start:end]
+                    terms_se[:, j] = np.sqrt(
+                        np.maximum(np.sum((B_j @ cov_j) * B_j, axis=1), 0.0)
+                    )
+            return (terms_fit, terms_se) if se_fit else terms_fit
+
+        if type != "response":
+            raise ValueError(f"Unknown predict type '{type}'. Choose 'response' or 'terms'.")
+
+        X = self._build_model_matrix(x_arr)
+        lp = X @ self.coef_
+        if se_fit:
+            se = (
+                np.sqrt(np.maximum(np.sum((X @ cov) * X, axis=1), 0.0))
+                if cov is not None
+                else np.zeros_like(lp)
+            )
+            return lp, se
+        return lp
+
+    def partial_dependence(
+        self, term_idx: int, x: ArrayLike, se_fit: bool = False
+    ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
         """Evaluate the partial contribution of term term_idx."""
         self._check_fitted()
         if term_idx < 0 or term_idx >= len(self._terms):
@@ -112,7 +150,19 @@ class _GAMBase:
             x_arr = x_arr.reshape(-1, 1)
         B_term = self._terms[term_idx].build_columns(x_arr)
         start, end = self._coef_slices[term_idx]
-        return B_term @ self.coef_[start:end]
+        contrib = B_term @ self.coef_[start:end]
+        if se_fit:
+            cov = self.statistics_.get("cov")
+            cov_sub = (
+                cov[start:end, start:end]
+                if cov is not None
+                else np.zeros((end - start, end - start))
+            )
+            se = np.sqrt(
+                np.maximum(np.sum((B_term @ cov_sub) * B_term, axis=1), 0.0)
+            )
+            return contrib, se
+        return contrib
 
     def confidence_intervals(self, x: ArrayLike, width: float = 0.95) -> np.ndarray:
         """Compute confidence intervals for the linear predictor."""
@@ -140,8 +190,10 @@ class _GAMBase:
 
         alpha = (1.0 - width) / 2.0
         df = max(self.statistics_["n_samples"] - self.statistics_["edof"], 1.0)
-        q_lo = stats.t.ppf(alpha, df=df)
-        q_hi = stats.t.ppf(1.0 - alpha, df=df)
+        # mgcv confidence bands use normal quantiles with the Bayesian covariance
+        dist = stats.norm if (self._scale_is_var and not prediction) else stats.t(df=df)
+        q_lo = dist.ppf(alpha)
+        q_hi = dist.ppf(1.0 - alpha)
 
         se = np.sqrt(np.maximum(var, 1e-14 if self._scale_is_var else 0.0))
         return np.column_stack([lp + q_lo * se, lp + q_hi * se])
@@ -152,23 +204,29 @@ class _GAMBase:
         n = self.statistics_["n_samples"]
         rss = self.statistics_["rss"]
         s = self.statistics_["scale"]
-        s2 = s if self._scale_is_var else s**2
+        s2 = rss / n if self._scale_is_var else s**2  # mgcv uses the ML scale dev/n
         log_w = self.statistics_.get("log_weights_sum", 0.0)
         return float(
             -0.5 * n * np.log(2.0 * np.pi * s2) - 0.5 * rss / s2 + 0.5 * log_w
         )
 
+    def _ll_df(self) -> float:
+        """Degrees of freedom for AIC/BIC; mgcv uses edf2 (smoothing-parameter-uncertainty corrected) when available."""
+        st = self.statistics_
+        df = st.get("edof_aic", st["edof"]) + 1
+        return float(min(df, len(self.coef_) + 1)) if self._scale_is_var else float(df)
+
     def aic(self) -> float:
         """Akaike Information Criterion (AIC)."""
         self._check_fitted()
-        return float(-2.0 * self.loglikelihood() + 2.0 * (self.statistics_["edof"] + 1))
+        return float(-2.0 * self.loglikelihood() + 2.0 * self._ll_df())
 
     def bic(self) -> float:
         """Bayesian Information Criterion (BIC)."""
         self._check_fitted()
         n = self.statistics_["n_samples"]
         return float(
-            -2.0 * self.loglikelihood() + np.log(n) * (self.statistics_["edof"] + 1)
+            -2.0 * self.loglikelihood() + np.log(n) * self._ll_df()
         )
 
     def deviance_explained(self) -> float:
@@ -322,13 +380,14 @@ class _GAMBase:
                     ax.plot(fv, self.partial_dependence(i, x_sweep), "C2-", lw=1.5)
                     ax.set_xlabel(f"{_fname(term.features[0])} (projection)")
                 feats_str = ",".join(str(f) for f in term.features)
+                kind = getattr(term, "kind", "te")
                 if hasattr(term, "n_splines_per"):
                     ks_str = ",".join(str(k) for k in term.n_splines_per)
                     ax.set_title(
-                        f"te({feats_str})   K=({ks_str})   {term.n_coefs} coefs"
+                        f"{kind}({feats_str})   K=({ks_str})   {term.n_coefs} coefs"
                     )
                 else:
-                    ax.set_title(f"te({feats_str})")
+                    ax.set_title(f"{kind}({feats_str})")
 
             elif "FactorTerm" in tname:
                 unique_lvls = np.unique(np.asarray(x_arr[:, term.feature]).ravel())

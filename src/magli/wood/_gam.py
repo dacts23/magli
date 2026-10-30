@@ -13,6 +13,7 @@ from .._base import _GAMBase, _validate_weights
 from .._formula import parse_formula
 from ._optimizer import fit_wood_engine
 from ._terms import (
+    _WoodFactorTerm,
     _WoodLinearTerm,
     _WoodSplineTerm,
     _WoodTensorTerm,
@@ -33,16 +34,20 @@ class GAMCore(_GAMBase):
         gamma: float = 1.0,
         fit_intercept: bool = True,
         spline_order: int = 3,
+        select: bool = False,
     ) -> None:
         self.formula = formula
         self.method = method.upper()
         self.gamma = float(gamma)
         self.fit_intercept = bool(fit_intercept)
         self.spline_order = int(spline_order)
+        self.select = bool(select)
 
         configs = parse_formula(formula)
         self._term_configs = configs
-        self._terms: List[_WoodTerm] = instantiate_wood_terms(configs)
+        self._terms: List[_WoodTerm] = instantiate_wood_terms(
+            configs, select=self.select
+        )
 
         self._coef_slices: List[Tuple[int, int]] = []
         self.coef_: Optional[np.ndarray] = None
@@ -134,6 +139,8 @@ class GAMCore(_GAMBase):
             "edf_per_term": fit_res["edf_per_term"],
             "f_stat_per_term": fit_res["f_stat_per_term"],
             "p_values_per_term": fit_res["p_values_per_term"],
+            "ref_df_per_term": fit_res["ref_df_per_term"],
+            "edof_aic": fit_res["edof_aic"],
             "log_weights_sum": fit_res["log_weights_sum"],
         }
         return self
@@ -179,8 +186,8 @@ class GAMCore(_GAMBase):
                     allowed.update(all_smooth)
                 elif item == "s":
                     allowed.update(i for i, t in enumerate(self._terms) if isinstance(t, _WoodSplineTerm))
-                elif item == "te":
-                    allowed.update(i for i, t in enumerate(self._terms) if isinstance(t, _WoodTensorTerm))
+                elif item in ("te", "ti"):
+                    allowed.update(i for i, t in enumerate(self._terms) if isinstance(t, _WoodTensorTerm) and t.kind == item)
             smooth_indices = [i for i in all_smooth if i in allowed]
             if not smooth_indices:
                 return self.fit(x_arr, y_arr, weights=w_arr)
@@ -214,8 +221,11 @@ class GAMCore(_GAMBase):
                 gamma=gamma,
                 fit_intercept=self.fit_intercept,
                 spline_order=self.spline_order,
+                select=self.select,
             )
-            cand_model._terms = instantiate_wood_terms(configs_copy)
+            cand_model._terms = instantiate_wood_terms(
+                configs_copy, select=self.select
+            )
             cand_model._term_configs = configs_copy
             try:
                 cand_model.fit(x_arr, y_arr, weights=w_arr)
@@ -262,6 +272,14 @@ class GAMCore(_GAMBase):
             param_rows.append(("(Intercept)", b0, se0, t0, p0))
 
         for i, t in enumerate(self._terms):
+            if isinstance(t, _WoodFactorTerm):
+                levels = t._levels[1:] if t.coding == "dummy" else t._levels
+                for j, level in enumerate(levels):
+                    k = self._coef_slices[i][0] + j
+                    b, se_b = self.coef_[k], self.statistics_["se"][k]
+                    tb = b / max(se_b, 1e-12)
+                    pb = 2.0 * (1.0 - stats.t.cdf(np.abs(tb), df=df_res))
+                    param_rows.append((f"f({t.feature}){level:g}", b, se_b, tb, pb))
             if isinstance(t, _WoodLinearTerm):
                 start, _ = self._coef_slices[i]
                 b = self.coef_[start]
@@ -282,16 +300,16 @@ class GAMCore(_GAMBase):
         smooth_rows = []
         for i, t in enumerate(self._terms):
             if isinstance(t, (_WoodSplineTerm, _WoodTensorTerm)):
+                by_str = f",by={t.by}" if getattr(t, "by", None) is not None else ""
                 if isinstance(t, _WoodSplineTerm):
-                    label, ref_df = f"s({t.feature})", t.k - 1
+                    label = f"s({t.feature}{by_str})"
                 else:
-                    label = f"te({','.join(str(f) for f in t.features)})"
-                    ref_df = t.n_coefs
+                    label = f"{t.kind}({','.join(str(f) for f in t.features)}{by_str})"
                 smooth_rows.append(
                     (
                         label,
                         self.statistics_["edf_per_term"][i],
-                        ref_df,
+                        self.statistics_["ref_df_per_term"][i],
                         self.statistics_["f_stat_per_term"][i],
                         self.statistics_["p_values_per_term"][i],
                     )
@@ -302,7 +320,7 @@ class GAMCore(_GAMBase):
             lines.append("        edf Ref.df      F p-value")
             for label, edf, ref_df, f_stat, pval in smooth_rows:
                 lines.append(
-                    f"{label:7s} {edf:6.2f} {ref_df:6d} {f_stat:6.3f} {pval:8.4g}"
+                    f"{label:7s} {edf:6.2f} {ref_df:6.3f} {f_stat:6.3f} {pval:8.4g}"
                 )
             lines.append("")
 

@@ -4,6 +4,7 @@ import json
 import os
 import shutil
 import subprocess
+import tempfile
 import numpy as np
 import pytest
 
@@ -22,12 +23,14 @@ def run_r_gam(script: str) -> dict:
     if not RSCRIPT_PATH:
         pytest.skip("Rscript not found on system.")
 
-    res = subprocess.run(
-        [RSCRIPT_PATH, "-e", script],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    with tempfile.NamedTemporaryFile("w", suffix=".R", delete=False) as fh:  # -e truncates long scripts on Windows
+        fh.write(script)
+    try:
+        res = subprocess.run(
+            [RSCRIPT_PATH, fh.name], capture_output=True, text=True, check=False, stdin=subprocess.DEVNULL
+        )
+    finally:
+        os.unlink(fh.name)
     if res.returncode != 0:
         raise RuntimeError(
             f"Rscript failed:\nSTDOUT:\n{res.stdout}\nSTDERR:\n{res.stderr}"
@@ -66,18 +69,21 @@ def r_mgcv_suite():
         + np.random.normal(0.0, 0.1, n)
     )
 
+    y_ti = y_add + 2.0 * (x0 - 0.5) * (x1 - 0.5)
+
     x_s = ",".join(f"{v:.15g}" for v in x)
     y_s = ",".join(f"{v:.15g}" for v in y)
     x0_s = ",".join(f"{v:.15g}" for v in x0)
     x1_s = ",".join(f"{v:.15g}" for v in x1)
     y2d_s = ",".join(f"{v:.15g}" for v in y_2d)
+    yti_s = ",".join(f"{v:.15g}" for v in y_ti)
     yadd_s = ",".join(f"{v:.15g}" for v in y_add)
 
     r_script = f"""
     suppressPackageStartupMessages(library(mgcv))
     suppressPackageStartupMessages(library(jsonlite))
     df <- data.frame(x = c({x_s}), y = c({y_s}))
-    df2 <- data.frame(x0 = c({x0_s}), x1 = c({x1_s}), y2d = c({y2d_s}), yadd = c({yadd_s}))
+    df2 <- data.frame(x0 = c({x0_s}), x1 = c({x1_s}), y2d = c({y2d_s}), yadd = c({yadd_s}), yti = c({yti_s}))
 
     bases <- c("tp", "ts", "cr", "cs", "cc", "ps", "cp", "bs")
     smooth_con <- list()
@@ -124,12 +130,21 @@ def r_mgcv_suite():
       scale = as.numeric(m_te$sig2)
     )
 
+    m_ti <- gam(yti ~ s(x0, bs="cr", k=8) + s(x1, bs="cr", k=8) + ti(x0, x1, bs="cr", k=4), data=df2, method="REML")
+    ti_res <- list(
+      fitted = as.numeric(fitted(m_ti)),
+      edf = as.numeric(sum(m_ti$edf)),
+      scale = as.numeric(m_ti$sig2),
+      ncoef = length(coef(m_ti))
+    )
+
     cat(toJSON(list(
       smooth_con = smooth_con,
       fits = fits,
       fixed = fixed_res,
       add = add_res,
-      te = te_res
+      te = te_res,
+      ti = ti_res
     ), digits=15, auto_unbox=TRUE))
     """
     return {
@@ -139,6 +154,7 @@ def r_mgcv_suite():
         "x1": x1,
         "y_2d": y_2d,
         "y_add": y_add,
+        "y_ti": y_ti,
         "r": run_r_gam(r_script),
     }
 
@@ -233,3 +249,18 @@ def test_tensor_product_vs_r(r_mgcv_suite):
     assert np.max(np.abs(py_fitted - r_fitted)) < 1e-6
     assert np.isclose(py_gam.statistics_["edof"], r_res["edf"], atol=1e-4)
     assert np.isclose(py_gam.statistics_["scale"], r_res["scale"], rtol=1e-5)
+
+
+def test_tensor_interaction_ti_vs_r(r_mgcv_suite):
+    """Verify s(x0) + s(x1) + ti(x0, x1) against R mgcv."""
+    X = np.column_stack([r_mgcv_suite["x0"], r_mgcv_suite["x1"]])
+    r_res = r_mgcv_suite["r"]["ti"]
+
+    py_gam = GAMCore(
+        "s(0, bs='cr', k=8) + s(1, bs='cr', k=8) + ti(0, 1, bs='cr', k=4)", method="REML"
+    ).fit(X, r_mgcv_suite["y_ti"])
+
+    assert len(py_gam.coef_) == r_res["ncoef"]
+    assert np.max(np.abs(py_gam.predict(X) - np.array(r_res["fitted"]))) < 1e-5
+    assert np.isclose(py_gam.statistics_["edof"], r_res["edf"], atol=1e-3)
+    assert np.isclose(py_gam.statistics_["scale"], r_res["scale"], rtol=1e-4)

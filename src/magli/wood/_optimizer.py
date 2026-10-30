@@ -5,7 +5,41 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
-from scipy import linalg, optimize, stats
+from scipy import linalg, optimize
+
+from ._tests import wood_test_stat
+
+def _edf2_per_coef(
+    hess, H_inv, coef, sp, free, bounds, subs, RtR, Vp, scale, df_reml
+) -> np.ndarray:
+    """mgcv's edf2: Vc = Vp + J V_rho J' + scale * Vb.corr, using the joint (rho, log phi) REML Hessian."""
+    p, m = len(coef), len(free)
+    S_full, b = [], np.zeros(m)
+    J = np.zeros((p, m))
+    for k, idx in enumerate(free):
+        s0, s1 = bounds[idx]
+        S = np.zeros((p, p))
+        S[s0:s1, s0:s1] = sp[idx] * subs[idx]  # lambda_k * S_k
+        S_full.append(S)
+        J[:, k] = -H_inv @ (S @ coef)
+        b[k] = -float(coef @ S @ coef) / (2.0 * scale)
+    c = df_reml / 2.0
+    H5 = np.block([[hess + np.outer(b, b) / c, b[:, None]], [b[None, :], np.array([[c]])]])
+    d, U = np.linalg.eigh(H5)
+    pos = d > 0
+    V_rho = ((U[:m, pos] / d[pos]) @ U[:m, pos].T)
+    Vr = (U[:m] / (np.where(pos, d, 0.0) + 0.1)) @ U[:m].T
+
+    Rc = np.linalg.cholesky(RtR + sum(S_full) + 1e-12 * np.eye(p)).T
+    Ri = np.linalg.inv(Rc)
+    dRi = []
+    for S in S_full:
+        A = Ri.T @ S @ Ri
+        dRc = (np.triu(A) - 0.5 * np.diag(np.diag(A))) @ Rc
+        dRi.append(-Ri @ dRc @ Ri)
+    Vb_corr = sum(Vr[i, j] * dRi[i] @ dRi[j].T for i in range(m) for j in range(m))
+    Vc = Vp + J @ V_rho @ J.T + scale * Vb_corr
+    return np.einsum("ij,ji->i", Vc, RtR) / scale
 
 
 def fit_wood_engine(
@@ -314,7 +348,7 @@ def fit_wood_engine(
             rho_init,
             jac=True,
             method="L-BFGS-B",
-            bounds=[(-15.0, 15.0)] * n_free,
+            bounds=[(-15.0, 25.0)] * n_free,
             options={"ftol": 1e-14, "gtol": 1e-10},
         )
         best_score, best_coef, best_H_inv, best_rss, best_scale, best_edf = (
@@ -333,28 +367,53 @@ def fit_wood_engine(
     edf_per_coef = np.diag(H_inv_RtR)
     total_edf = float(np.sum(edf_per_coef))
 
+    F_mat = H_inv_RtR
+    edf1_per_coef = 2.0 * edf_per_coef - np.einsum("ij,ji->i", F_mat, F_mat)
+    edf2_per_coef = None
+    if method == "REML" and free_indices:
+        # Wood et al. (2016) smoothing-parameter-uncertainty correction, as in mgcv's edf2.
+        n_free = len(free_indices)
+        eps = 1e-4
+        hess = np.zeros((n_free, n_free))
+        for k_i in range(n_free):
+            e = np.zeros(n_free)
+            e[k_i] = eps
+            hess[:, k_i] = (
+                _eval_criterion(opt.x + e, compute_grad=True)[1]
+                - _eval_criterion(opt.x - e, compute_grad=True)[1]
+            ) / (2 * eps)
+        hess = 0.5 * (hess + hess.T)
+        try:
+            edf2_per_coef = _edf2_per_coef(
+                hess, best_H_inv, best_coef, best_sp, free_indices, pen_bounds,
+                pen_sub, RtR, Vp, scale_val, max(n - M_p, 1),
+            )
+            if edf2_per_coef.sum() > edf1_per_coef.sum():
+                edf2_per_coef = edf1_per_coef
+        except Exception:
+            edf2_per_coef = None
     edf_per_term: List[float] = []
     p_values_per_term: List[float] = []
     f_stat_per_term: List[float] = []
+    ref_df_per_term: List[float] = []
 
     if coef_slices is not None:
         df2 = max(n - total_edf, 1.0)
         for start, end in coef_slices:
             term_edf = float(np.sum(edf_per_coef[start:end]))
             edf_per_term.append(term_edf)
-            beta_sub = best_coef[start:end]
-            V_sub = Vp[start:end, start:end]
+            rank = min(end - start, float(np.sum(edf1_per_coef[start:end])))
             try:
-                stat = float(
-                    (beta_sub.T @ linalg.pinv(V_sub) @ beta_sub)
-                    / max(term_edf, 1e-6)
+                stat, pval, rank = wood_test_stat(
+                    best_coef[start:end], X[:, start:end],
+                    Vp[start:end, start:end], rank, df2,
                 )
-                pval = float(1.0 - stats.f.cdf(stat, max(term_edf, 1.0), df2))
+                stat /= rank
             except Exception:
-                stat, pval = 0.0, 1.0
+                stat, pval, rank = 0.0, 1.0, float(end - start)
             f_stat_per_term.append(stat)
             p_values_per_term.append(pval)
-
+            ref_df_per_term.append(rank)
     dev_explained = max(0.0, 1.0 - best_rss / max(null_deviance, 1e-12))
     r_sq_adj = max(
         0.0,
@@ -364,11 +423,6 @@ def fit_wood_engine(
     )
 
     gcv_score = (n * best_rss) / (max(n - gamma * total_edf, 1.0) ** 2)
-    loglik = (
-        -0.5 * n * np.log(2.0 * np.pi * scale_val)
-        - 0.5 * best_rss / scale_val
-        + 0.5 * log_w_sum
-    )
 
     return {
         "coef": best_coef,
@@ -381,6 +435,9 @@ def fit_wood_engine(
         "edof_per_coef": edf_per_coef,
         "edf_per_term": edf_per_term,
         "f_stat_per_term": f_stat_per_term,
+        "ref_df_per_term": ref_df_per_term,
+        "edf1_per_coef": edf1_per_coef,
+        "edof_aic": float(np.sum(edf2_per_coef if edf2_per_coef is not None else edf_per_coef)),
         "p_values_per_term": p_values_per_term,
         "rss": best_rss,
         "deviance": best_rss,
@@ -390,10 +447,7 @@ def fit_wood_engine(
         "GCV": gcv_score,
         "score": best_score,
         "method": method,
-        "loglik": loglik,
         "log_weights_sum": log_w_sum,
-        "aic": -2.0 * loglik + 2.0 * (total_edf + 1),
-        "bic": -2.0 * loglik + np.log(n) * (total_edf + 1),
         "n_samples": n,
         "H_inv": best_H_inv,
         "RtR": RtR,

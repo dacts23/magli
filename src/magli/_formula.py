@@ -28,13 +28,13 @@ def parse_formula(formula: str) -> List[Dict[str, Any]]:
         if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
             raise ValueError(f"Cannot parse term in '{formula}'.")
         func_name = node.func.id.lower()
-        if func_name not in ("s", "te", "f", "l"):
+        if func_name not in ("s", "te", "ti", "f", "l"):
             raise ValueError(
-                f"Unknown term type '{func_name}'. Expected s, te, f, or l."
+                f"Unknown term type '{func_name}'. Expected s, te, ti, f, or l."
             )
         positional = [_eval_ast(a) for a in node.args]
         kwargs = {kw.arg: _eval_ast(kw.value) for kw in node.keywords if kw.arg}
-        min_feats = 2 if func_name == "te" else 1
+        min_feats = 2 if func_name in ("te", "ti") else 1
         if len(positional) < min_feats:
             raise ValueError(
                 f"'{func_name}()' requires at least {min_feats} feature index(es)."
