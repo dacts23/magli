@@ -10,7 +10,23 @@ from ._terms import _SplineTerm
 
 
 class LinGAM(GAMCore):
-    """Penalised B-spline GAM for a single smooth term y = f(x) + eps."""
+    r"""Single-term Penalized B-spline GAM (Eilers & Marx backend).
+
+    Fits univariate P-spline models :math:`y = \beta_0 + f(x) + \epsilon` using
+    uniform B-spline bases, discrete difference penalties :math:`D_d`, and
+    optional active-set shape constraints (monotonicity, convexity).
+
+    Parameters
+    ----------
+    n_splines : int, default=10
+        Number of evenly spaced B-spline basis functions.
+    lam : float, default=1.0
+        Smoothing parameter :math:`\lambda \ge 0`.
+    spline_order : int, default=3
+        Degree of the B-spline polynomial basis (3 = cubic B-splines).
+    constraint : {None, 'periodic', 'monotonic_inc', 'monotonic_dec', 'convex', 'concave'}, default=None
+        Shape constraint enforced via active-set asymmetric difference penalties.
+    """
 
     def __init__(
         self,
@@ -108,7 +124,30 @@ class LinGAM(GAMCore):
         n_jobs: int = 1,
         weights: Optional[ArrayLike] = None,
     ) -> "LinGAM":
-        """Select optimal (lam, n_splines) by minimising GCV."""
+        r"""Tune smoothing parameter `lam` and basis count `n_splines` via GCV grid search.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples,) or (n_samples, 1)
+            Covariate values.
+        y : array_like of shape (n_samples,)
+            Response values.
+        lam : array_like of float, optional
+            Candidate smoothing parameter values. Default is log-spaced grid.
+        n_splines : array_like of int, optional
+            Candidate spline counts.
+        gamma : float, default=1.4
+            GCV inflation multiplier.
+        n_jobs : int, default=1
+            Number of parallel processes for grid evaluation.
+        weights : array_like of shape (n_samples,), optional
+            Observation weights.
+
+        Returns
+        -------
+        self : LinGAM
+            Fitted optimal model.
+        """
         nsp = [np.atleast_1d(n_splines)] if n_splines is not None else None
         lam_g = np.atleast_1d(lam) if lam is not None else None
         super().gridsearch(

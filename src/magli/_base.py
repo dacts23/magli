@@ -49,7 +49,28 @@ def _kron_sum(penalties: List[np.ndarray]) -> np.ndarray:
 
 
 class _GAMBase:
-    """Shared lifecycle, prediction, interval, criteria, and plotting methods."""
+    r"""Shared lifecycle, prediction, inference, criteria, and diagnostic methods.
+
+    Abstract base class inherited by both the Wood (:class:`magli.wood.GAMCore`)
+    and Eilers-Marx (:class:`magli.eilers.GAMCore`) engines. Provides unified
+    prediction, confidence/prediction interval computation, partial dependence
+    evaluation, information criteria (AIC, BIC), log-likelihood, and visualization.
+
+    Attributes
+    ----------
+    coef_ : ndarray of shape (n_coefficients,) or None
+        Estimated regression coefficients across all model terms and intercept.
+    statistics_ : dict or None
+        Dictionary of fit criteria, residual statistics, and covariance matrices.
+    formula : str
+        Model formula string.
+    fit_intercept : bool
+        Whether an intercept term :math:`\beta_0` is fitted.
+    is_fitted : bool
+        Boolean flag indicating whether the model has been fitted to data.
+    n_terms : int
+        Number of additive terms in the model specification.
+    """
 
     _scale_is_var: bool = False
     formula: str = ""
@@ -98,7 +119,71 @@ class _GAMBase:
         type: str = "response",
         se_fit: bool = False,
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
-        """Predict target values or term components for feature data x."""
+        r"""Predict target values or individual additive term contributions for feature data.
+
+        Evaluates the fitted model :math:`\hat{y} = \hat{\beta}_0 + \sum_j \hat{f}_j(x_j)`
+        or returns a matrix of separate term evaluations :math:`\hat{f}_j(x_j)`.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples, n_features) or (n_samples,)
+            Input evaluation points. If 1D, reshaped to `(n_samples, 1)`.
+        type : {'response', 'terms'}, default='response'
+            Prediction target:
+
+            - 'response' : Returns the overall linear predictor :math:`\hat{y} = X\hat{\beta}`.
+            - 'terms' : Returns a 2D matrix of shape `(n_samples, n_terms)` containing
+              the centered contribution of each individual additive term.
+        se_fit : bool, default=False
+            Whether to calculate standard error estimates for each prediction based on
+            the estimated Bayesian covariance matrix :math:`V_\beta = (X^T W X + S)^{-1} \hat{\sigma}^2`.
+
+        Returns
+        -------
+        y_pred : ndarray of shape (n_samples,) or (n_samples, n_terms)
+            Fitted values. If `type='terms'`, returns an array where column `j` corresponds
+            to term `j`.
+        se : ndarray of shape (n_samples,) or (n_samples, n_terms), optional
+            Standard error estimates corresponding to `y_pred`. Only returned if `se_fit=True`.
+
+        Raises
+        ------
+        RuntimeError
+            If the model has not been fitted prior to calling predict.
+        ValueError
+            If `type` is not `'response'` or `'terms'`.
+
+        See Also
+        --------
+        partial_dependence : Evaluate contribution of a single term.
+        confidence_intervals : Pointwise confidence intervals for the linear predictor.
+        prediction_intervals : Pointwise prediction intervals for new observations.
+
+        Notes
+        -----
+        Standard error calculation uses the Bayesian posterior covariance matrix:
+
+        .. math::
+
+            \operatorname{SE}(\hat{y}_i) = \sqrt{X_i V_\beta X_i^T}
+
+        where :math:`X_i` is the row of the model matrix for sample :math:`i`. For individual
+        terms (:math:`type='terms'`), only the sub-block of :math:`V_\beta` corresponding to
+        that term's spline coefficients is used.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import magli as mg
+        >>> x = np.linspace(0, 1, 50)
+        >>> y = 2.0 * x**2 + np.random.default_rng(0).normal(0, 0.05, size=50)
+        >>> model = mg.LinGAM(n_splines=6).fit(x, y)
+        >>> preds, ses = model.predict(np.array([0.2, 0.8]), se_fit=True)
+        >>> preds.shape
+        (2,)
+        >>> ses.shape
+        (2,)
+        """
         self._check_fitted()
         x_arr = np.asarray(x, dtype=float)
         if x_arr.ndim == 1:
@@ -139,7 +224,48 @@ class _GAMBase:
     def partial_dependence(
         self, term_idx: int, x: ArrayLike, se_fit: bool = False
     ) -> Union[np.ndarray, Tuple[np.ndarray, np.ndarray]]:
-        """Evaluate the partial contribution of term term_idx."""
+        r"""Evaluate the centered partial contribution of a single model term.
+
+        Computes :math:`\hat{f}_j(x_j) = B_j(x_j) \hat{\beta}_j` for the specified term
+        index, isolating its isolated effect from the intercept and all other covariates.
+
+        Parameters
+        ----------
+        term_idx : int
+            Zero-based index of the term in the model formula (e.g. 0 for the first term).
+        x : array_like of shape (n_samples, n_features) or (n_samples,)
+            Evaluation data.
+        se_fit : bool, default=False
+            Whether to return standard error estimates for the term contribution.
+
+        Returns
+        -------
+        contrib : ndarray of shape (n_samples,)
+            Partial contribution of the specified term across evaluation points.
+        se : ndarray of shape (n_samples,), optional
+            Standard error of the term contribution. Only returned if `se_fit=True`.
+
+        Raises
+        ------
+        IndexError
+            If `term_idx` is out of bounds for the fitted model.
+
+        See Also
+        --------
+        predict : Predict overall response or all terms simultaneously.
+        plot_decomposition : Visualize all term partial dependencies in subplots.
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import magli as mg
+        >>> X = np.column_stack([np.linspace(0, 1, 50), np.linspace(-1, 1, 50)])
+        >>> y = np.sin(X[:, 0]) + X[:, 1]
+        >>> model = mg.GAMCore("s(0) + l(1)").fit(X, y)
+        >>> pdep_s0 = model.partial_dependence(0, X[:3])
+        >>> pdep_s0.shape
+        (3,)
+        """
         self._check_fitted()
         if term_idx < 0 or term_idx >= len(self._terms):
             raise IndexError(
@@ -165,11 +291,106 @@ class _GAMBase:
         return contrib
 
     def confidence_intervals(self, x: ArrayLike, width: float = 0.95) -> np.ndarray:
-        """Compute confidence intervals for the linear predictor."""
+        r"""Compute pointwise confidence intervals for the true mean function :math:`E[y|x]`.
+
+        Calculates upper and lower confidence bounds reflecting epistemic parameter
+        uncertainty in the estimated spline coefficients.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples, n_features) or (n_samples,)
+            Evaluation points.
+        width : float, default=0.95
+            Nominal coverage probability of the interval (e.g. 0.95 for a 95% interval).
+            Must be strictly between 0 and 1.
+
+        Returns
+        -------
+        intervals : ndarray of shape (n_samples, 2)
+            Two-column array where column 0 contains the lower bound and column 1
+            contains the upper bound: `[lower_bound, upper_bound]`.
+
+        See Also
+        --------
+        prediction_intervals : Prediction intervals incorporating residual noise :math:`\sigma^2`.
+        predict : Point predictions without uncertainty bounds.
+
+        Notes
+        -----
+        The confidence interval is given by:
+
+        .. math::
+
+            \hat{y}(x) \pm z_{1-lpha/2} \sqrt{X(x) V_\beta X(x)^T}
+
+        where :math:`V_\beta = (X^T W X + S)^{-1} \hat{\sigma}^2` is the Bayesian posterior
+        covariance matrix of the regression coefficients and :math:`z_{1-lpha/2}` is the
+        normal quantile (or Student's :math:`t` quantile for small-sample models).
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import magli as mg
+        >>> x = np.linspace(0, 1, 40)
+        >>> y = np.exp(x) + np.random.default_rng(1).normal(0, 0.05, size=40)
+        >>> model = mg.LinGAM(n_splines=6).fit(x, y)
+        >>> ci = model.confidence_intervals(np.array([0.5]), width=0.95)
+        >>> ci.shape
+        (1, 2)
+        >>> ci[0, 0] < ci[0, 1]
+        True
+        """
         return self._compute_intervals(x, width, prediction=False)
 
     def prediction_intervals(self, x: ArrayLike, width: float = 0.95) -> np.ndarray:
-        """Compute prediction intervals for new observations."""
+        r"""Compute pointwise prediction intervals for future observable responses :math:`y_{\text{new}}`.
+
+        Unlike confidence intervals which quantify uncertainty in the expected mean :math:`E[y|x]`,
+        prediction intervals also account for aleatoric observation noise :math:`\epsilon \sim \mathcal{N}(0, \sigma^2)`.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples, n_features) or (n_samples,)
+            Evaluation points.
+        width : float, default=0.95
+            Nominal coverage probability of the interval (e.g. 0.95 for a 95% interval).
+
+        Returns
+        -------
+        intervals : ndarray of shape (n_samples, 2)
+            Two-column array where column 0 is the lower prediction limit and column 1
+            is the upper prediction limit.
+
+        See Also
+        --------
+        confidence_intervals : Confidence intervals for the mean response.
+
+        Notes
+        -----
+        The total variance for a new observation combines parameter variance and residual variance:
+
+        .. math::
+
+            \operatorname{Var}(y_{\text{new}} | x) = X(x) V_\beta X(x)^T + \hat{\sigma}^2
+
+        The prediction interval is:
+
+        .. math::
+
+            \hat{y}(x) \pm t_{n - \text{edf}, 1-lpha/2} \sqrt{\operatorname{Var}(y_{\text{new}} | x)}
+
+        Examples
+        --------
+        >>> import numpy as np
+        >>> import magli as mg
+        >>> x = np.linspace(0, 1, 40)
+        >>> y = np.sin(x) + np.random.default_rng(2).normal(0, 0.1, size=40)
+        >>> model = mg.LinGAM(n_splines=6).fit(x, y)
+        >>> pi = model.prediction_intervals(np.array([0.5]), width=0.95)
+        >>> ci = model.confidence_intervals(np.array([0.5]), width=0.95)
+        >>> (pi[0, 1] - pi[0, 0]) > (ci[0, 1] - ci[0, 0])
+        True
+        """
         return self._compute_intervals(x, width, prediction=True)
 
     def _compute_intervals(
@@ -199,7 +420,27 @@ class _GAMBase:
         return np.column_stack([lp + q_lo * se, lp + q_hi * se])
 
     def loglikelihood(self) -> float:
-        """Gaussian log-likelihood of the fitted model."""
+        r"""Compute the Gaussian log-likelihood of the fitted model.
+
+        Evaluates the log-likelihood function under Gaussian errors:
+
+        .. math::
+
+            \ell(\beta, \sigma^2) = -\frac{n}{2}\ln(2\pi\sigma^2) - \frac{\text{RSS}}{2\sigma^2} + \frac{1}{2}\sum_i \ln w_i
+
+        where :math:`\text{RSS} = \sum_i w_i (y_i - \hat{y}_i)^2` is the weighted residual
+        sum of squares and :math:`\sigma^2` is the estimated scale parameter.
+
+        Returns
+        -------
+        loglik : float
+            Gaussian log-likelihood value.
+
+        See Also
+        --------
+        aic : Akaike Information Criterion.
+        bic : Bayesian Information Criterion.
+        """
         self._check_fitted()
         n = self.statistics_["n_samples"]
         rss = self.statistics_["rss"]
@@ -217,12 +458,42 @@ class _GAMBase:
         return float(min(df, len(self.coef_) + 1)) if self._scale_is_var else float(df)
 
     def aic(self) -> float:
-        """Akaike Information Criterion (AIC)."""
+        r"""Compute the Akaike Information Criterion (AIC).
+
+        Calculates:
+
+        .. math::
+
+            \text{AIC} = -2\ell + 2 \cdot \text{EDF}
+
+        where :math:`\ell` is the log-likelihood and :math:`\text{EDF}` includes the
+        degrees of freedom of the fitted model (accounting for smoothing parameter
+        uncertainty via ``edf2`` when available, matching R's ``mgcv``).
+
+        Returns
+        -------
+        aic_score : float
+            AIC score (lower values indicate a preferred model).
+        """
         self._check_fitted()
         return float(-2.0 * self.loglikelihood() + 2.0 * self._ll_df())
 
     def bic(self) -> float:
-        """Bayesian Information Criterion (BIC)."""
+        r"""Compute the Bayesian Information Criterion (BIC).
+
+        Calculates:
+
+        .. math::
+
+            \text{BIC} = -2\ell + \ln(n) \cdot \text{EDF}
+
+        penalizing model complexity more heavily than AIC for sample sizes :math:`n > 7`.
+
+        Returns
+        -------
+        bic_score : float
+            BIC score (lower values indicate a preferred model).
+        """
         self._check_fitted()
         n = self.statistics_["n_samples"]
         return float(
@@ -230,12 +501,136 @@ class _GAMBase:
         )
 
     def deviance_explained(self) -> float:
-        """Fraction of null deviance explained (pseudo R-squared)."""
+        r"""Compute the fraction of null deviance explained (pseudo :math:`R^2`).
+
+        Calculates:
+
+        .. math::
+
+            R^2_{\text{dev}} = 1 - \frac{\text{Deviance}_{\text{model}}}{\text{Deviance}_{\text{null}}}
+
+        Returns
+        -------
+        r2 : float
+            Proportion of deviance explained in :math:`[0, 1]`.
+        """
         self._check_fitted()
         null_dev = self.statistics_.get("null_deviance")
         if not null_dev:
             return 0.0
         return float(max(0.0, 1.0 - self.statistics_["rss"] / null_dev))
+
+    def summary(self) -> str:
+        r"""Generate a formatted regression table summarizing terms, significance, and fit criteria.
+
+        Outputs parametric coefficient estimates (intercept, linear terms) with standard
+        errors, t-statistics, and p-values, followed by smooth terms with effective degrees
+        of freedom (EDF), rank, test statistics, and approximate p-values matching R's
+        ``summary.gam`` Wood (2013).
+
+        Returns
+        -------
+        summary_str : str
+            Multi-line formatted summary table string.
+
+        See Also
+        --------
+        deviance_explained : Pseudo R-squared metric.
+        aic : Akaike Information Criterion.
+        bic : Bayesian Information Criterion.
+
+        References
+        ----------
+        - Wood (2013): Wood, S. N. (2013). "On p-values for smooth components of an extended
+               generalized additive model." *Biometrika*, 100(1), 221-228.
+        """
+        self._check_fitted()
+        n = self.statistics_["n_samples"]
+        score_name = "REML" if getattr(self, "method", None) == "REML" else "GCV"
+        score_val = self.statistics_.get("score", self.statistics_["GCV"])
+
+        lines = [
+            "",
+            "Family: gaussian ",
+            "Link function: identity ",
+            "",
+            f"Formula: {self.formula}",
+            "",
+        ]
+
+        param_rows = []
+        df_res = max(n - self.statistics_["edof"], 1.0)
+        if self.fit_intercept:
+            b0 = self.coef_[-1]
+            se0 = self.statistics_["se"][-1]
+            t0 = b0 / max(se0, 1e-12)
+            p0 = float(2.0 * stats.t.sf(np.abs(t0), df=df_res))
+            param_rows.append(("(Intercept)", b0, se0, t0, p0))
+
+        for i, t in enumerate(self._terms):
+            tname = type(t).__name__
+            if "FactorTerm" in tname:
+                levels = t._levels[1:] if t.coding == "dummy" else t._levels
+                for j, level in enumerate(levels):
+                    k = self._coef_slices[i][0] + j
+                    b, se_b = self.coef_[k], self.statistics_["se"][k]
+                    tb = b / max(se_b, 1e-12)
+                    pb = float(2.0 * stats.t.sf(np.abs(tb), df=df_res))
+                    param_rows.append((f"f({t.feature}){level:g}", b, se_b, tb, pb))
+            if "LinearTerm" in tname:
+                start, _ = self._coef_slices[i]
+                b = self.coef_[start]
+                se_b = self.statistics_["se"][start]
+                tb = b / max(se_b, 1e-12)
+                pb = float(2.0 * stats.t.sf(np.abs(tb), df=df_res))
+                param_rows.append((f"l({t.feature})", b, se_b, tb, pb))
+
+        if param_rows:
+            lines.append("Parametric coefficients:")
+            lines.append("            Estimate Std. Error t value Pr(>|t|)")
+            for name, b, se_b, tb, pb in param_rows:
+                lines.append(
+                    f"{name:11s} {b:10.4f} {se_b:10.4f} {tb:7.3f} {pb:8.4g}"
+                )
+            lines.append("")
+
+        smooth_rows = []
+        for i, t in enumerate(self._terms):
+            tname = type(t).__name__
+            if "SplineTerm" in tname or "TensorTerm" in tname:
+                by_str = f",by={t.by}" if getattr(t, "by", None) is not None else ""
+                if "SplineTerm" in tname:
+                    label = f"s({t.feature}{by_str})"
+                else:
+                    kind = getattr(t, "kind", "te")
+                    label = f"{kind}({','.join(str(f) for f in t.features)}{by_str})"
+                smooth_rows.append(
+                    (
+                        label,
+                        self.statistics_["edf_per_term"][i],
+                        self.statistics_["ref_df_per_term"][i],
+                        self.statistics_["f_stat_per_term"][i],
+                        self.statistics_["p_values_per_term"][i],
+                    )
+                )
+
+        if smooth_rows:
+            lines.append("Approximate significance of smooth terms:")
+            lines.append("        edf Ref.df      F p-value")
+            for label, edf, ref_df, f_stat, pval in smooth_rows:
+                lines.append(
+                    f"{label:7s} {edf:6.2f} {ref_df:6.3f} {f_stat:6.3f} {pval:8.4g}"
+                )
+            lines.append("")
+
+        lines.extend(
+            [
+                f"R-sq.(adj) = {self.statistics_['r_sq_adj']:.4f}   Deviance explained = {self.statistics_['deviance_explained'] * 100:.1f}%",
+                f"{score_name} = {score_val:10.4f}  Scale est. = {self.statistics_['scale']:.4f}   n = {n}",
+                "",
+            ]
+        )
+        return "\n".join(lines)
 
     def _diagnostics_title(self) -> str:
         return f"{type(self).__name__} Diagnostics: {self.formula}"
@@ -538,7 +933,34 @@ class _GAMBase:
         y: ArrayLike,
         figsize: Optional[Tuple[int, int]] = None,
     ) -> Tuple[Any, np.ndarray]:
-        """Diagnostic plots for model validation."""
+        r"""Generate a four-panel diagnostic plot for model validation and residual inspection.
+
+        Creates four diagnostic subplots:
+        1. Observed vs. Fitted values with a 1:1 reference line and :math:`R^2`.
+        2. Residuals vs. Fitted values checking for homoscedasticity and non-linear drift.
+        3. Normal Q-Q plot assessing residual normality.
+        4. Residual Distribution histogram with superimposed Gaussian kernel density.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples, n_features) or (n_samples,)
+            Feature data corresponding to observations `y`.
+        y : array_like of shape (n_samples,)
+            True observed target values.
+        figsize : tuple of (int, int), optional
+            Figure dimension `(width, height)` in inches. Default is `(10, 9)`.
+
+        Returns
+        -------
+        fig : matplotlib.figure.Figure
+            The generated figure object.
+        axes : ndarray of matplotlib.axes.Axes of shape (4,)
+            Flat array containing the 4 subplot axis objects.
+
+        See Also
+        --------
+        plot_decomposition : Visualize individual additive term contributions.
+        """
         import matplotlib.pyplot as plt
 
         self._check_fitted()

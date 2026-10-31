@@ -29,10 +29,12 @@ class _WoodSplineTerm(_WoodTerm):
         knots: Optional[np.ndarray] = None,
         constraint: Optional[str] = None,
         by: Optional[int] = None,
+        select: bool = False,
     ) -> None:
         self.feature = int(feature)
         self.k = int(k)
         self.bs = bs.lower()
+        self.select = bool(select)
         if constraint is not None and constraint != "periodic":
             raise ValueError(
                 f"Unsupported constraint '{constraint}' for Wood backend. "
@@ -70,6 +72,13 @@ class _WoodSplineTerm(_WoodTerm):
             X_abs, self._penalties, self._Z = absorb_sum_to_zero_constraint(
                 X_raw, S_scaled
             )
+        if self.select and len(self._penalties) == 1:
+            es_val, es_vec = np.linalg.eigh(self._penalties[0])
+            pos = es_val > es_val[-1] * 1e-10
+            if np.any(pos) and not np.all(pos):
+                es_val[~pos] = float(np.min(es_val[pos])) * 0.1
+                S_sh = es_vec @ (es_val[:, None] * es_vec.T)
+                self._penalties = [0.5 * (S_sh + S_sh.T)]
         self.n_coefs = X_abs.shape[1]
         self._cached_cols = np.asarray(x[:, [self.feature] + ([self.by] if self.by is not None else [])], dtype=float)
         self._cached_X = X_abs
@@ -270,6 +279,7 @@ def instantiate_wood_terms(
                     knots=kw.pop("knots", None),
                     constraint=kw.pop("constraint", None),
                     by=by_val,
+                    select=select,
                 )
             )
         elif kind in ("te", "ti"):

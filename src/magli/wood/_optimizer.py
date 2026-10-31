@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import numpy as np
 from scipy import linalg, optimize
 
-from ._tests import wood_test_stat
+from ._tests import wood_re_test, wood_test_stat
 
 def _edf2_per_coef(
     hess, H_inv, coef, sp, free, bounds, subs, RtR, Vp, scale, df_reml
@@ -60,15 +60,16 @@ def fit_wood_engine(
         raise ValueError(f"Unknown method '{method}'. Choose 'REML' or 'GCV.Cp'.")
 
     if weights is not None:
-        null_deviance = float(
-            np.sum(weights * (y - float(np.average(y, weights=weights))) ** 2)
-        )
+        y_mean = float(np.average(y, weights=weights))
+        null_deviance = float(np.sum(weights * (y - y_mean) ** 2))
         log_w_sum = float(np.sum(np.log(weights[weights > 0])))
         w_sqrt = np.sqrt(weights)
+        y0_w = w_sqrt * (y - y_mean)
         X = X * w_sqrt[:, None]
         y = y * w_sqrt
     else:
-        null_deviance = float(np.sum((y - float(np.mean(y))) ** 2))
+        y0_w = y - float(np.mean(y))
+        null_deviance = float(np.sum(y0_w**2))
         log_w_sum = 0.0
 
     if n > p:
@@ -102,7 +103,7 @@ def fit_wood_engine(
     rank_S_list: List[int] = []
     log_det_const: List[float] = []
     supports: List[np.ndarray] = []
-    for S in S_list:
+    for idx, S in enumerate(S_list):
         nz = np.where(np.diag(S) > 0)[0]
         s0, s1 = (int(nz[0]), int(nz[-1]) + 1) if len(nz) > 0 else (0, 0)
         pen_bounds.append((s0, s1))
@@ -119,6 +120,13 @@ def fit_wood_engine(
         else:
             rank_S_list.append(0)
             log_det_const.append(0.0)
+        if idx not in free_indices and sp_vals[idx] == 0.0 and s1 > s0:
+            sp_vals[idx] = float(
+                np.trace(RtR[s0:s1, s0:s1])
+                / max(float(np.linalg.norm(sub, "fro")), 1e-300)
+                * np.finfo(float).eps
+                * 0.1
+            )
 
     overlapping = [False] * n_pens
     for i in range(n_pens):
@@ -341,8 +349,40 @@ def fit_wood_engine(
         best_sp = sp_vals
     else:
         n_free = len(free_indices)
-        candidates = [np.full(n_free, v) for v in (-8.0, -4.0, 0.0, 4.0, 8.0)]
-        rho_init = min(candidates, key=lambda r: _eval_criterion(r)[0])
+        ldxx = np.diag(RtR)
+        ldss = np.zeros(p)
+        pen_mask = np.zeros(p, dtype=bool)
+        def_sp = np.ones(len(S_list))
+        eps8 = np.finfo(float).eps ** 0.8
+        for i, (s0, s1) in enumerate(pen_bounds):
+            sub = pen_sub[i]
+            abs_S = np.abs(sub)
+            ma_s = float(np.max(abs_S))
+            if ma_s <= 0.0:
+                continue
+            thresh = eps8 * ma_s
+            ind = (
+                (np.mean(abs_S, axis=1) > thresh)
+                & (np.mean(abs_S, axis=0) > thresh)
+                & (np.diag(abs_S) > thresh)
+            )
+            if np.any(ind):
+                size_xx = float(np.mean(ldxx[s0:s1][ind]))
+                size_s = float(np.mean(np.diag(sub)[ind]))
+                if size_s > 0.0 and size_xx > 0.0:
+                    def_sp[i] = size_xx / size_s
+                    ldss[s0:s1] += def_sp[i] * np.diag(sub)
+                    pen_mask[s0:s1] |= ind
+        ind_all = (ldss > 0.0) & pen_mask & (ldxx > 0.0)
+        if np.any(ind_all):
+            xx_a, ss_a = ldxx[ind_all], ldss[ind_all]
+            while float(np.mean(xx_a / (xx_a + ss_a))) > 0.4:
+                def_sp *= 10.0
+                ss_a *= 10.0
+            while float(np.mean(xx_a / (xx_a + ss_a))) < 0.4:
+                def_sp /= 10.0
+                ss_a /= 10.0
+        rho_init = np.clip(np.log(def_sp[free_indices]), -15.0, 25.0)
         opt = optimize.minimize(
             lambda r: _eval_criterion(r, compute_grad=True),
             rho_init,
@@ -351,6 +391,19 @@ def fit_wood_engine(
             bounds=[(-15.0, 25.0)] * n_free,
             options={"ftol": 1e-14, "gtol": 1e-10},
         )
+        if np.any(opt.x <= -14.9):
+            candidates = [np.full(n_free, v) for v in (-8.0, -4.0, 0.0, 4.0, 8.0)]
+            r_grid = min(candidates, key=lambda r: _eval_criterion(r)[0])
+            opt2 = optimize.minimize(
+                lambda r: _eval_criterion(r, compute_grad=True),
+                r_grid,
+                jac=True,
+                method="L-BFGS-B",
+                bounds=[(-15.0, 25.0)] * n_free,
+                options={"ftol": 1e-14, "gtol": 1e-10},
+            )
+            if opt2.fun < opt.fun:
+                opt = opt2
         best_score, best_coef, best_H_inv, best_rss, best_scale, best_edf = (
             _eval_criterion(opt.x, compute_details=True)
         )
@@ -399,27 +452,52 @@ def fit_wood_engine(
 
     if coef_slices is not None:
         df2 = max(n - total_edf, 1.0)
-        for start, end in coef_slices:
+        S_final = np.zeros((p, p), dtype=float)
+        for (s0, s1), sub, l_val in zip(pen_bounds, pen_sub, best_sp):
+            if s1 > s0:
+                S_final[s0:s1, s0:s1] += l_val * sub
+        is_re = [
+            s1 > s0
+            and sum(1 for b0, b1 in pen_bounds if b0 >= s0 and b1 <= s1 and b1 > b0) == 1
+            and S_final[s0, s0] > 0
+            and np.allclose(S_final[s0:s1, s0:s1], S_final[s0, s0] * np.eye(s1 - s0))
+            for s0, s1 in coef_slices
+        ]
+        for ti, (start, end) in enumerate(coef_slices):
+            q = end - start
             term_edf = float(np.sum(edf_per_coef[start:end]))
             edf_per_term.append(term_edf)
-            rank = min(end - start, float(np.sum(edf1_per_coef[start:end])))
+            S_blk = S_final[start:end, start:end]
+            ev_blk = linalg.eigvalsh(S_blk, check_finite=False) if q > 0 else np.zeros(0)
+            pen_rank = int(np.sum(ev_blk > max(float(ev_blk[-1]) * 1e-10, 1e-14))) if q > 0 else 0
             try:
-                stat, pval, rank = wood_test_stat(
-                    best_coef[start:end], X[:, start:end],
-                    Vp[start:end, start:end], rank, df2,
-                )
+                if pen_rank == q and q > 0:
+                    other_re = np.zeros(p, dtype=bool)
+                    for rj, (rs0, rs1) in enumerate(coef_slices):
+                        if rj != ti and is_re[rj]:
+                            other_re[rs0:rs1] = True
+                    stat, pval, rank = wood_re_test(
+                        best_coef, R, S_final, Vp, Ve, scale_val, start, end, df2, other_re
+                    )
+                else:
+                    rank = float(q) if pen_rank == 0 else min(q, float(np.sum(edf1_per_coef[start:end])))
+                    stat, pval, rank = wood_test_stat(
+                        best_coef[start:end], X[:, start:end],
+                        Vp[start:end, start:end], rank, df2,
+                    )
                 stat /= rank
             except Exception:
-                stat, pval, rank = 0.0, 1.0, float(end - start)
+                stat, pval, rank = 0.0, 1.0, float(q)
             f_stat_per_term.append(stat)
             p_values_per_term.append(pval)
             ref_df_per_term.append(rank)
     dev_explained = max(0.0, 1.0 - best_rss / max(null_deviance, 1e-12))
-    r_sq_adj = max(
-        0.0,
-        1.0
-        - (best_rss / max(n - total_edf, 1))
-        / (null_deviance / max(n - 1, 1)),
+    res_w = y - X @ best_coef
+    var_y0 = float(np.var(y0_w))
+    r_sq_adj = (
+        1.0 - (float(np.var(res_w)) * (n - 1)) / (var_y0 * max(n - total_edf, 1))
+        if var_y0 > 0
+        else 0.0
     )
 
     gcv_score = (n * best_rss) / (max(n - gamma * total_edf, 1.0) ** 2)

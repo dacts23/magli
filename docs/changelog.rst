@@ -1,6 +1,18 @@
 Changelog
 =========
 
+Version 1.1.1
+-------------
+*Released 2026-10-30*
+
+* **Comprehensive NumPy-style API Documentation**:
+  - Full NumPy Docstring Standard (numpydoc) explanations across all public classes: :class:`GAM`, :class:`LinGAM`, and :class:`GAMCore`.
+  - Detailed parameter tables with shapes, default values, valid options, and algorithmic implications.
+  - Complete attributes specifications (:attr:`coef_`, :attr:`intercept_`, :attr:`scale_`, :attr:`edf_`, :attr:`statistics_`).
+  - Mathematical formulations and algorithmic notes for penalized least squares, REML/GCV criteria, identifiability constraints, and covariance matrices.
+  - Copy-pasteable doctest examples for model initialization, fitting, prediction, confidence intervals, and diagnostics.
+  - Overhauled :doc:`api` reference structure with detailed term constructor guides (``s()``, ``te()``, ``ti()``, ``l()``, ``f()``).
+
 Version 1.1.0
 -------------
 *Released 2026-10-30*

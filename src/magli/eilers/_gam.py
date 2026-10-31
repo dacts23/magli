@@ -13,6 +13,7 @@ from scipy.linalg import block_diag, cho_factor, cho_solve
 
 from .._base import _GAMBase, _validate_weights
 from .._formula import parse_formula
+from ..wood._tests import wood_test_stat
 from ._solver import solve_pirls
 from ._terms import (
     _FactorTerm,
@@ -25,7 +26,20 @@ from ._terms import (
 
 
 class GAMCore(_GAMBase):
-    """Multi-term Generalized Additive Model with formula interface."""
+    r"""Multi-term Generalized Additive Model (Eilers & Marx backend).
+
+    Fits multivariate additive models :math:`y = \beta_0 + \sum_j f_j(x_j) + \epsilon`
+    using P-splines with difference penalties and optional shape constraints.
+
+    Parameters
+    ----------
+    formula : str
+        Model formula (e.g. ``"s(0) + s(1, constraint='monotonic_inc') + l(2)"``).
+    spline_order : int, default=3
+        Spline polynomial degree.
+    fit_intercept : bool, default=True
+        Whether to fit an unpenalized intercept :math:`\beta_0`.
+    """
 
     _scale_is_var = False
 
@@ -64,7 +78,22 @@ class GAMCore(_GAMBase):
         y: ArrayLike,
         weights: Optional[ArrayLike] = None,
     ) -> "GAMCore":
-        """Fit the model."""
+        r"""Fit the multi-term P-spline GAM model.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples, n_features) or (n_samples,)
+            Feature covariate matrix.
+        y : array_like of shape (n_samples,)
+            Target values.
+        weights : array_like of shape (n_samples,), optional
+            Observation weights.
+
+        Returns
+        -------
+        self : GAMCore
+            Fitted model instance.
+        """
         x_arr = np.asarray(x)
         y_arr = np.asarray(y).ravel()
         if not np.all(np.isfinite(x_arr)) or not np.all(np.isfinite(y_arr)):
@@ -113,22 +142,101 @@ class GAMCore(_GAMBase):
 
         rss = float(np.sum((y_w - X_w @ coef) ** 2))
         self.coef_ = coef
-        edof_per_coef = (
-            np.sum(U1**2, axis=1) if n >= X.shape[1] else np.sum(U1**2, axis=0)
-        )
+        F_mat = B_solve @ X_w
+        edof_per_coef = np.diag(F_mat)
         edof = float(np.sum(edof_per_coef))
+        df_res = max(n - edof, 1.0)
 
-        scale = np.sqrt(rss / max(n - edof, 1))
+        scale = np.sqrt(rss / df_res)
         cov = (B_solve @ B_solve.T) * scale**2
+        if any(
+            isinstance(t, _SplineTerm) and t.has_shape_constraint
+            for t in self._terms
+        ):
+            c_blocks = [
+                t.build_constraint_penalty(coef[s:e])
+                if isinstance(t, _SplineTerm)
+                else np.zeros((t.n_coefs, t.n_coefs))
+                for t, (s, e) in zip(self._terms, self._coef_slices)
+            ]
+            if self.fit_intercept:
+                c_blocks.append(np.zeros((1, 1)))
+            P_eff = P + (c_blocks[0] if len(c_blocks) == 1 else block_diag(*c_blocks))
+        else:
+            P_eff = P
+        Vp = np.linalg.pinv(X_w.T @ X_w + P_eff, rcond=1e-7) * scale**2
+        edf1_per_coef = 2.0 * edof_per_coef - np.einsum("ij,ji->i", F_mat, F_mat)
+        edf_per_term: List[float] = []
+        ref_df_per_term: List[float] = []
+        f_stat_per_term: List[float] = []
+        p_values_per_term: List[float] = []
+        w_sum = float(np.sum(weights)) if weights is not None else float(n)
+        for t, (s0, s1) in zip(self._terms, self._coef_slices):
+            q = s1 - s0
+            if isinstance(t, (_SplineTerm, _TensorTerm)) and self.fit_intercept:
+                if weights is not None:
+                    Xc = X_w[:, s0:s1] - np.outer(
+                        w_sqrt, (w_sqrt @ X_w[:, s0:s1]) / w_sum
+                    )
+                else:
+                    Xc = X_w[:, s0:s1] - X_w[:, s0:s1].mean(axis=0, keepdims=True)
+                B_Xc = B_solve @ Xc
+                term_edf = float(np.trace(B_Xc[s0:s1]))
+                rank = min(
+                    float(q),
+                    max(0.0, float(2.0 * term_edf - np.sum(F_mat[s0:s1, :] * B_Xc.T))),
+                )
+            else:
+                Xc = X_w[:, s0:s1]
+                is_unpen = isinstance(t, _LinearTerm) or getattr(t, "lam", 0.0) == 0.0
+                term_edf = float(q) if is_unpen else float(np.sum(edof_per_coef[s0:s1]))
+                rank = (
+                    float(q)
+                    if is_unpen
+                    else min(float(q), float(np.sum(edf1_per_coef[s0:s1])))
+                )
+            edf_per_term.append(term_edf)
+            try:
+                stat, pval, rank = wood_test_stat(
+                    coef[s0:s1], Xc, Vp[s0:s1, s0:s1], rank, df_res
+                )
+                stat /= rank
+            except Exception:
+                stat, pval, rank = 0.0, 1.0, float(q)
+            f_stat_per_term.append(stat)
+            p_values_per_term.append(pval)
+            ref_df_per_term.append(rank)
+
+        dev_explained = max(0.0, 1.0 - rss / max(null_deviance, 1e-12))
+        y0_w = (
+            (y - np.average(y, weights=weights)) * w_sqrt
+            if weights is not None
+            else y - np.mean(y)
+        )
+        res_w = y_w - X_w @ coef
+        var_y0 = float(np.var(y0_w))
+        r_sq_adj = (
+            1.0 - (float(np.var(res_w)) * (n - 1)) / (var_y0 * df_res)
+            if var_y0 > 0.0
+            else 0.0
+        )
 
         self.statistics_ = {
             "edof": edof,
             "edof_per_coef": edof_per_coef,
+            "edf_per_term": edf_per_term,
+            "ref_df_per_term": ref_df_per_term,
+            "f_stat_per_term": f_stat_per_term,
+            "p_values_per_term": p_values_per_term,
             "scale": scale,
             "cov": cov,
+            "Vp": Vp,
+            "Ve": cov,
             "se": np.sqrt(np.diag(cov)),
             "rss": rss,
             "null_deviance": null_deviance,
+            "deviance_explained": dev_explained,
+            "r_sq_adj": r_sq_adj,
             "n_samples": n,
             "GCV": (n * rss) / max(n - gamma * edof, 1) ** 2,
             "log_weights_sum": log_w_sum,
@@ -580,7 +688,9 @@ def _solve_constrained(
             blocks.append(np.zeros((1, 1)))
         C = blocks[0] if len(blocks) == 1 else block_diag(*blocks)
         coef_new, U1, B_solve = solve_pirls(X_w, y_w, P + C)
-        if np.linalg.norm(coef - coef_new) < tol:
+        if np.linalg.norm(coef - coef_new) < tol * min(
+            1.0, max(float(np.linalg.norm(coef_new)), 1e-12)
+        ):
             return coef_new, U1, B_solve
         coef = coef_new
     return coef, U1, B_solve

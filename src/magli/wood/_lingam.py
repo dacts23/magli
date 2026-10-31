@@ -12,7 +12,33 @@ from ._terms import _WoodSplineTerm
 
 
 class LinGAM(GAMCore):
-    """Penalised GAM for a single smooth term y = beta_0 + f(x) + eps (Wood backend)."""
+    r"""Single-term Penalized GAM using Simon Wood's (2011) penalized regression splines.
+
+    Fits univariate smooth models :math:`y = \beta_0 + f(x) + \epsilon` with automated
+    smoothing parameter estimation via Restricted Maximum Likelihood (REML) or
+    Generalized Cross Validation (GCV).
+
+    Parameters
+    ----------
+    n_splines : int, default=10
+        Maximum basis dimension :math:`k`. Must be >= 3.
+    lam : float, optional
+        Fixed smoothing parameter :math:`\lambda`. If None, estimated via REML or GCV.
+    spline_order : int, default=3
+        Spline polynomial order (cubic splines = 3).
+    constraint : {None, 'periodic'}, default=None
+        Boundary constraint. 'periodic' sets `bs='cc'` (cyclic cubic splines).
+    k : int, optional
+        Alias for `n_splines`.
+    sp : float, optional
+        Alias for `lam`.
+    bs : {'tp', 'ts', 'cr', 'cs', 'cc', 'ps', 'cp', 'bs'}, default='tp'
+        Spline basis constructor.
+    method : {'REML', 'GCV'}, default='REML'
+        Smoothing optimization criterion.
+    gamma : float, default=1.0
+        GCV inflation multiplier.
+    """
 
     def __init__(
         self,
@@ -129,7 +155,22 @@ class LinGAM(GAMCore):
         y: ArrayLike,
         weights: Optional[ArrayLike] = None,
     ) -> "LinGAM":
-        """Fit the GAM model using Wood REML or GCV criteria."""
+        r"""Fit single-term GAM model using Simon Wood's REML or GCV criterion.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples,) or (n_samples, 1)
+            Covariate values.
+        y : array_like of shape (n_samples,)
+            Response values.
+        weights : array_like of shape (n_samples,), optional
+            Non-negative prior observation weights :math:`w_i`. Default is None.
+
+        Returns
+        -------
+        self : LinGAM
+            Fitted model instance.
+        """
         x_arr = np.asarray(x, dtype=float).ravel()
         y_arr = np.asarray(y, dtype=float).ravel()
         if not np.all(np.isfinite(x_arr)) or not np.all(np.isfinite(y_arr)):
@@ -162,7 +203,28 @@ class LinGAM(GAMCore):
         gamma: float = 1.0,
         weights: Optional[ArrayLike] = None,
     ) -> "LinGAM":
-        """Select optimal basis dimension k (and optionally lam) via REML or GCV."""
+        r"""Select optimal basis dimension `k` (and optionally `lam`) via REML or GCV.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples,) or (n_samples, 1)
+            Covariate values.
+        y : array_like of shape (n_samples,)
+            Response values.
+        n_splines : array_like of int, optional
+            Candidate values for basis dimension :math:`k`.
+        lam : array_like of float, optional
+            Candidate smoothing parameter values :math:`\lambda`.
+        gamma : float, default=1.0
+            GCV penalty inflation multiplier.
+        weights : array_like of shape (n_samples,), optional
+            Observation weights.
+
+        Returns
+        -------
+        best_model : LinGAM
+            Optimal fitted model.
+        """
         x_arr = np.asarray(x, dtype=float).ravel()
         y_arr = np.asarray(y, dtype=float).ravel()
         k_list = [

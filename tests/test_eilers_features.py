@@ -202,3 +202,42 @@ def test_weighted_loglikelihood_includes_log_weights():
         sigma = np.sqrt(np.sum(w * (y - mu) ** 2) / len(y)) if backend == "wood" else s
         expected_ll = float(np.sum(stats.norm.logpdf(y, loc=mu, scale=sigma / np.sqrt(w))))
         assert np.isclose(m.loglikelihood(), expected_ll, atol=1e-10)
+
+
+def test_eilers_edof_per_coef_and_wood_summary_pvalues():
+    """Verify coefficient-space edof_per_coef, Wood (2013) p-values, and .summary() in Eilers."""
+    rng = np.random.default_rng(42)
+    n = 120
+    X = rng.uniform(0.0, 1.0, (n, 3))
+    y = np.sin(2.0 * np.pi * X[:, 0]) + 1.5 * X[:, 2] + rng.normal(0.0, 0.2, n)
+
+    g = GAMCore("s(0, n_splines=10, lam=2.0) + s(1, n_splines=10, lam=50.0) + l(2)", backend="eilers").fit(X, y)
+    X_mat = g._build_model_matrix(X)
+    P = g._build_penalty()
+    eps = np.finfo(float).eps
+    F_exact = np.linalg.solve(X_mat.T @ X_mat + P + np.sqrt(eps) * np.eye(X_mat.shape[1]), X_mat.T @ X_mat)
+
+    assert np.allclose(g.statistics_["edof_per_coef"], np.diag(F_exact), atol=1e-12)
+    assert g.statistics_["p_values_per_term"][0] < 1e-6
+    assert g.statistics_["p_values_per_term"][1] > 0.05
+    assert g.statistics_["p_values_per_term"][2] < 1e-6
+
+    s_out = g.summary()
+    assert "Approximate significance of smooth terms:" in s_out
+    assert "Parametric coefficients:" in s_out
+    assert "GCV =" in s_out
+
+    m_lin = LinGAM(n_splines=10, lam=1.0, backend="eilers").fit(X[:, 0], y)
+    assert "Approximate significance of smooth terms:" in m_lin.summary()
+
+
+def test_eilers_constrained_small_scale():
+    """Verify scale-aware convergence in _solve_constrained when y has tiny magnitude."""
+    rng = np.random.default_rng(7)
+    x = np.linspace(0.0, 1.0, 60)
+    y = 1e-6 * (np.sin(2.0 * np.pi * x) + rng.normal(0.0, 0.1, 60))
+    xg = np.linspace(0.0, 1.0, 150)
+
+    p_inc = LinGAM(n_splines=10, lam=0.6, constraint="mono_inc", backend="eilers").fit(x, y).predict(xg)
+    assert np.min(np.diff(p_inc)) >= -1e-12
+

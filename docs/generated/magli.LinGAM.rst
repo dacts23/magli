@@ -3,4 +3,7 @@ magli.LinGAM
 
 .. currentmodule:: magli
 
-.. autoclass:: LinGAM
+.. autoclass:: GAM
+   :members:
+   :inherited-members:
+   :show-inheritance:

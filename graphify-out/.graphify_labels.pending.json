@@ -1,0 +1,16 @@
+{
+  "0": "fit_wood_engine",
+  "1": "GAMCore",
+  "3": "eilers/_gam.py",
+  "8": "eilers/_terms.py",
+  "12": "pytest",
+  "13": "_SplineTerm",
+  "14": "numpy",
+  "15": "parse_formula",
+  "16": "_TensorTerm",
+  "17": "eilers/__init__.py",
+  "18": "b_spline_basis",
+  "20": "Section-by-Section Guide",
+  "24": "ndarray",
+  "25": "magli: Generalized Additive Models (GAMs) in Python"
+}

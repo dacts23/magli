@@ -23,7 +23,26 @@ from ._terms import (
 
 
 class GAMCore(_GAMBase):
-    """Multi-term Generalized Additive Model with formula interface (Wood backend)."""
+    r"""Multi-term Generalized Additive Model with formula interface (Wood backend).
+
+    Fits multivariate additive models :math:`y = \beta_0 + \sum_j f_j(x_j) + \epsilon`
+    using Simon Wood's continuous REML or GCV smoothing parameter optimization.
+
+    Parameters
+    ----------
+    formula : str
+        Additive formula expression (e.g. ``"s(0, k=10) + te(1, 2) + l(3)"``).
+    method : {'REML', 'GCV'}, default='REML'
+        Smoothing optimization criterion.
+    gamma : float, default=1.0
+        GCV penalty inflation multiplier.
+    fit_intercept : bool, default=True
+        Whether to fit an unpenalized global intercept.
+    spline_order : int, default=3
+        Default spline polynomial order.
+    select : bool, default=False
+        If True, applies extra null-space shrinkage penalties for feature selection.
+    """
 
     _scale_is_var = True
 
@@ -64,7 +83,22 @@ class GAMCore(_GAMBase):
         y: ArrayLike,
         weights: Optional[ArrayLike] = None,
     ) -> "GAMCore":
-        """Fit multi-term GAM model using REML or GCV criteria."""
+        r"""Fit multi-term GAM model using REML or GCV criteria.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples, n_features) or (n_samples,)
+            Design covariate data.
+        y : array_like of shape (n_samples,)
+            Response values.
+        weights : array_like of shape (n_samples,), optional
+            Non-negative prior observation weights :math:`w_i`.
+
+        Returns
+        -------
+        self : GAMCore
+            Fitted model instance.
+        """
         x_arr = np.asarray(x, dtype=float)
         y_arr = np.asarray(y, dtype=float).ravel()
         if not np.all(np.isfinite(x_arr)) or not np.all(np.isfinite(y_arr)):
@@ -245,93 +279,6 @@ class GAMCore(_GAMBase):
             return self
 
         return self.fit(x_arr, y_arr, weights=w_arr)
-
-    def summary(self) -> str:
-        """Formatted summary table for the fitted Wood GAM."""
-        self._check_fitted()
-        n = self.statistics_["n_samples"]
-        score_name = "REML" if self.method == "REML" else "GCV"
-        score_val = self.statistics_["score"]
-
-        lines = [
-            "",
-            "Family: gaussian ",
-            "Link function: identity ",
-            "",
-            f"Formula: {self.formula}",
-            "",
-        ]
-
-        param_rows = []
-        df_res = max(n - self.statistics_["edof"], 1.0)
-        if self.fit_intercept:
-            b0 = self.coef_[-1]
-            se0 = self.statistics_["se"][-1]
-            t0 = b0 / max(se0, 1e-12)
-            p0 = 2.0 * (1.0 - stats.t.cdf(np.abs(t0), df=df_res))
-            param_rows.append(("(Intercept)", b0, se0, t0, p0))
-
-        for i, t in enumerate(self._terms):
-            if isinstance(t, _WoodFactorTerm):
-                levels = t._levels[1:] if t.coding == "dummy" else t._levels
-                for j, level in enumerate(levels):
-                    k = self._coef_slices[i][0] + j
-                    b, se_b = self.coef_[k], self.statistics_["se"][k]
-                    tb = b / max(se_b, 1e-12)
-                    pb = 2.0 * (1.0 - stats.t.cdf(np.abs(tb), df=df_res))
-                    param_rows.append((f"f({t.feature}){level:g}", b, se_b, tb, pb))
-            if isinstance(t, _WoodLinearTerm):
-                start, _ = self._coef_slices[i]
-                b = self.coef_[start]
-                se_b = self.statistics_["se"][start]
-                tb = b / max(se_b, 1e-12)
-                pb = 2.0 * (1.0 - stats.t.cdf(np.abs(tb), df=df_res))
-                param_rows.append((f"l({t.feature})", b, se_b, tb, pb))
-
-        if param_rows:
-            lines.append("Parametric coefficients:")
-            lines.append("            Estimate Std. Error t value Pr(>|t|)")
-            for name, b, se_b, tb, pb in param_rows:
-                lines.append(
-                    f"{name:11s} {b:10.4f} {se_b:10.4f} {tb:7.3f} {pb:8.4g}"
-                )
-            lines.append("")
-
-        smooth_rows = []
-        for i, t in enumerate(self._terms):
-            if isinstance(t, (_WoodSplineTerm, _WoodTensorTerm)):
-                by_str = f",by={t.by}" if getattr(t, "by", None) is not None else ""
-                if isinstance(t, _WoodSplineTerm):
-                    label = f"s({t.feature}{by_str})"
-                else:
-                    label = f"{t.kind}({','.join(str(f) for f in t.features)}{by_str})"
-                smooth_rows.append(
-                    (
-                        label,
-                        self.statistics_["edf_per_term"][i],
-                        self.statistics_["ref_df_per_term"][i],
-                        self.statistics_["f_stat_per_term"][i],
-                        self.statistics_["p_values_per_term"][i],
-                    )
-                )
-
-        if smooth_rows:
-            lines.append("Approximate significance of smooth terms:")
-            lines.append("        edf Ref.df      F p-value")
-            for label, edf, ref_df, f_stat, pval in smooth_rows:
-                lines.append(
-                    f"{label:7s} {edf:6.2f} {ref_df:6.3f} {f_stat:6.3f} {pval:8.4g}"
-                )
-            lines.append("")
-
-        lines.extend(
-            [
-                f"R-sq.(adj) = {self.statistics_['r_sq_adj']:.4f}   Deviance explained = {self.statistics_['deviance_explained'] * 100:.1f}%",
-                f"{score_name} = {score_val:10.4f}  Scale est. = {self.statistics_['scale']:.4f}   n = {n}",
-                "",
-            ]
-        )
-        return "\n".join(lines)
 
     def plot_decomposition(
         self,

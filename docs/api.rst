@@ -1,15 +1,24 @@
 API Reference
 =============
 
-This page documents the public API and internal engines in magli.
+Welcome to the **magli** API reference. This document provides in-depth, NumPy-style
+technical specifications, mathematical formulations, parameter tables, and runnable
+examples for all public classes, methods, formula terms, and backend engines.
 
 .. currentmodule:: magli
 
-Public Unified API
-------------------
+.. contents:: Table of Contents
+   :local:
+   :depth: 2
 
-The top-level :class:`GAM` (aliased as :class:`LinGAM`) and :class:`GAMCore` classes dynamically dispatch
-to either the Wood (``backend='wood'``, default) or Eilers-Marx (``backend='eilers'``) engine.
+
+Unified Dispatch API
+--------------------
+
+The top-level :class:`GAM` (aliased as :class:`LinGAM`) and :class:`GAMCore` classes provide
+a unified entrypoint that dynamically dispatches to either the Wood (``backend='wood'``, default)
+or Eilers-Marx (``backend='eilers'``) engine.
+
 Backend-specific classes are also directly importable from :mod:`magli` as
 ``WoodLinGAM``, ``WoodGAMCore``, ``EilersLinGAM``, and ``EilersGAMCore``.
 
@@ -17,204 +26,152 @@ Backend-specific classes are also directly importable from :mod:`magli` as
    :toctree: generated/
    :nosignatures:
 
-   GAMCore
    LinGAM
+   GAMCore
 
 
-Shared Architecture
--------------------
+Backend Engines Compared
+^^^^^^^^^^^^^^^^^^^^^^^^
 
-.. currentmodule:: magli._base
+.. list-table::
+   :header-rows: 1
+   :widths: 22 39 39
 
-magli._base
-^^^^^^^^^^^^
-
-Shared ``_GAMBase`` lifecycle inherited by both engines, handling prediction, partial
-dependence, confidence/prediction intervals, information criteria, and all
-decomposition/diagnostic plotting.  (``scale`` is σ for Eilers-Marx, σ² for Wood.)
-
-.. automodule:: magli._base
-    :members:
-
-.. currentmodule:: magli._formula
-
-magli._formula
-^^^^^^^^^^^^^^^
-
-Shared additive model formula parser for ``s()``, ``te()``, ``f()``, and ``l()`` terms.
-
-.. automodule:: magli._formula
-   :members:
-
-.. literalinclude:: ../src/magli/_formula.py
-   :language: python
-   :linenos:
+   * - Feature / Aspect
+     - Wood Backend (``backend='wood'``)
+     - Eilers-Marx Backend (``backend='eilers'``)
+   * - **Primary Paradigm**
+     - Penalized Regression Splines (Wood 2011, 2017)
+     - P-splines with Difference Penalties (Eilers & Marx 1996)
+   * - **Smoothing Parameter Estimation**
+     - Continuous REML or GCV optimization via Newton-Raphson / L-BFGS-B
+     - Discrete 2D grid search over :math:`(k, \lambda)` using cached Cholesky
+   * - **Basis Families**
+     - Thin plate (``tp``, ``ts``), cubic regression (``cr``, ``cs``), cyclic (``cc``), P-splines (``ps``, ``cp``), B-splines (``bs``), random effects (``re``)
+     - Uniform B-splines of arbitrary order (default cubic)
+   * - **Multidimensional Interactions**
+     - Full tensor products (``te``), pure ANOVA interactions (``ti``)
+     - Tensor products with Kronecker sum penalties
+   * - **Shape Constraints**
+     - Periodic boundary conditions (``constraint='periodic'`` / ``bs='cc'``)
+     - Asymmetric penalty active-set: ``monotonic_inc``, ``monotonic_dec``, ``convex``, ``concave``, ``periodic``
+   * - **Statistical Inference**
+     - Approximate F/Chi-square tests, Wood (2013) p-values, ``edf2``
+     - Standard errors, Bayesian covariance matrix, pseudo :math:`R^2`
 
 
-Eilers & Marx Engine (``magli.eilers``)
----------------------------------------------
+Formula Grammar & Term Constructors
+-----------------------------------
+
+The formula parser :func:`magli._formula.parse_formula` allows specifying multi-term models
+using concise expressions joined by ``+``:
+
+.. code-block:: python
+
+    import magli as mg
+    model = mg.GAMCore("s(0, k=12, bs='cr') + te(1, 2) + l(3) + f(4)")
+
+Term Constructors
+^^^^^^^^^^^^^^^^^
+
+.. rubric:: 1. Univariate Smooths: ``s(feature, ...)``
+
+Fits an unconstrained or constrained smooth curve :math:`f(x_j)` using penalized splines:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 20 20 60
+
+   * - Parameter
+     - Type & Default
+     - Description
+   * - ``feature``
+     - ``int``
+     - 0-based column index of the input feature in :math:`X`.
+   * - ``k`` / ``n_splines``
+     - ``int``, default=10
+     - Maximum basis dimension (number of spline functions). Must be :math:`\ge 3`.
+   * - ``bs``
+     - ``str``, default=``'tp'``
+     - Basis family: ``'tp'`` (thin plate), ``'ts'`` (shrinkage TP), ``'cr'`` (cubic regression), ``'cs'`` (shrinkage cubic), ``'cc'`` (cyclic cubic), ``'ps'`` (P-spline), ``'cp'`` (cyclic P-spline), ``'bs'`` (B-spline), ``'re'`` (random effect).
+   * - ``m``
+     - ``tuple`` or ``int``, optional
+     - Spline and derivative penalty order (e.g. ``m=(3, 2)`` for cubic spline with 2nd difference penalty).
+   * - ``sp`` / ``lam``
+     - ``float``, optional
+     - Fixed smoothing parameter :math:`\lambda`. If omitted, estimated automatically.
+   * - ``by``
+     - ``int``, optional
+     - Column index of a continuous covariate :math:`z` for varying-coefficient smooths :math:`z \cdot f(x_j)`.
+   * - ``constraint``
+     - ``str``, optional
+     - Shape constraint: ``'periodic'``, ``'monotonic_inc'``, ``'monotonic_dec'``, ``'convex'``, ``'concave'``.
+
+.. rubric:: 2. Tensor Product Smooths: ``te(feat1, feat2, ...)``
+
+Constructs multidimensional interaction smooths :math:`f(x_1, x_2)` invariant to coordinate scaling:
+
+.. math::
+
+    B_{\text{tensor}} = B_1 \otimes B_2, \quad S_{\text{tensor}} = \lambda_1 (S_1 \otimes I_{k_2}) + \lambda_2 (I_{k_1} \otimes S_2)
+
+.. rubric:: 3. Pure Tensor Interactions: ``ti(feat1, feat2, ...)``
+
+Constructs pure interaction smooths with marginal main effects projected out, enabling classical functional ANOVA decompositions:
+
+.. math::
+
+    y = \beta_0 + f_1(x_1) + f_2(x_2) + f_{12}(x_1, x_2) + \epsilon
+
+specified as ``formula="s(0) + s(1) + ti(0, 1)"``.
+
+.. rubric:: 4. Parametric Linear Terms: ``l(feature)``
+
+Includes a standard linear covariate :math:`\beta_j x_j` without a non-linear spline penalty.
+
+.. rubric:: 5. Categorical Factors: ``f(feature, coding='dummy')``
+
+Includes categorical variables with reference-level dummy coding.
+
+
+Shared Model Methods & Lifecycle
+--------------------------------
+
+All models in ``magli`` inherit from :class:`magli._base._GAMBase`, providing a unified
+method interface across both backends:
+
+.. autoclass:: magli._base._GAMBase
+   :members: predict, partial_dependence, confidence_intervals, prediction_intervals, summary, aic, bic, loglikelihood, deviance_explained, plot_decomposition, plot_diagnostics
+   :noindex:
+
+
+Engine Implementations
+----------------------
+
+Direct access to engine-specific classes:
+
+Wood Engine (:mod:`magli.wood`)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Simon Wood's GAM methods (Wood 2011, 2017) with multiple basis types,
+null-space constraint absorption, and continuous REML / GCV smoothing optimization.
+
+.. autosummary::
+   :toctree: generated/
+   :nosignatures:
+
+   wood.LinGAM
+   wood.GAMCore
+
+Eilers-Marx Engine (:mod:`magli.eilers`)
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 B-spline additive models with discrete GCV grid search and soft shape constraints
 following Eilers & Marx (1996).
 
-.. currentmodule:: magli.eilers
-
-Classes
-^^^^^^^
-
 .. autosummary::
    :toctree: generated/
    :nosignatures:
 
-   LinGAM
-   GAMCore
-
-Modules
-^^^^^^^
-
-.. currentmodule:: magli.eilers._bspline
-
-magli.eilers._bspline
-"""""""""""""""""""""""""""
-.. automodule:: magli.eilers._bspline
-   :members:
-
-.. literalinclude:: ../src/magli/eilers/_bspline.py
-   :language: python
-   :linenos:
-
-.. currentmodule:: magli.eilers._penalty
-
-magli.eilers._penalty
-"""""""""""""""""""""""""""
-.. automodule:: magli.eilers._penalty
-   :members:
-
-.. literalinclude:: ../src/magli/eilers/_penalty.py
-   :language: python
-   :linenos:
-
-.. currentmodule:: magli.eilers._solver
-
-magli.eilers._solver
-""""""""""""""""""""""""""
-.. automodule:: magli.eilers._solver
-   :members:
-
-.. literalinclude:: ../src/magli/eilers/_solver.py
-   :language: python
-   :linenos:
-
-.. currentmodule:: magli.eilers._terms
-
-magli.eilers._terms
-"""""""""""""""""""""""""
-.. automodule:: magli.eilers._terms
-   :members:
-
-.. literalinclude:: ../src/magli/eilers/_terms.py
-   :language: python
-   :linenos:
-
-.. currentmodule:: magli.eilers._lingam
-
-magli.eilers._lingam
-""""""""""""""""""""""""""
-.. automodule:: magli.eilers._lingam
-   :members:
-
-.. literalinclude:: ../src/magli/eilers/_lingam.py
-   :language: python
-   :linenos:
-
-
-.. currentmodule:: magli.eilers._gam
-
-magli.eilers._gam
-"""""""""""""""""""""""
-.. automodule:: magli.eilers._gam
-   :members:
-   :exclude-members: _set_lams_from_combo, _assemble_penalty_from_bases,
-                     _precompute_penalty_bases, _build_matrix_from_terms
-
-.. literalinclude:: ../src/magli/eilers/_gam.py
-   :language: python
-   :linenos:
-
-
-Wood Engine (``magli.wood``)
------------------------------
-
-Python implementation of Simon Wood's GAM methods (Wood 2011, 2017) with multiple basis types,
-null-space constraint absorption, and continuous REML / GCV smoothing optimization.
-
-.. currentmodule:: magli.wood
-
-Classes
-^^^^^^^
-
-.. autosummary::
-   :toctree: generated/
-   :nosignatures:
-
-   LinGAM
-   GAMCore
-
-Modules
-^^^^^^^
-
-.. currentmodule:: magli.wood._smooths
-
-magli.wood._smooths
-""""""""""""""""""""
-.. automodule:: magli.wood._smooths
-   :members:
-
-.. literalinclude:: ../src/magli/wood/_smooths.py
-   :language: python
-   :linenos:
-
-.. currentmodule:: magli.wood._optimizer
-
-magli.wood._optimizer
-""""""""""""""""""""""
-.. automodule:: magli.wood._optimizer
-   :members:
-
-.. literalinclude:: ../src/magli/wood/_optimizer.py
-   :language: python
-   :linenos:
-
-.. currentmodule:: magli.wood._terms
-
-magli.wood._terms
-""""""""""""""""""
-.. automodule:: magli.wood._terms
-   :members:
-
-.. literalinclude:: ../src/magli/wood/_terms.py
-   :language: python
-   :linenos:
-
-.. currentmodule:: magli.wood._lingam
-
-magli.wood._lingam
-"""""""""""""""""""
-.. automodule:: magli.wood._lingam
-   :members:
-
-.. literalinclude:: ../src/magli/wood/_lingam.py
-   :language: python
-   :linenos:
-
-
-.. currentmodule:: magli.wood._gam
-
-magli.wood._gam
-""""""""""""""""
-.. automodule:: magli.wood._gam
-   :members:
-
-.. literalinclude:: ../src/magli/wood/_gam.py
-   :language: python
-   :linenos:
+   eilers.LinGAM
+   eilers.GAMCore

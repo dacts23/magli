@@ -53,7 +53,8 @@ def data_and_r():
             f'out[["{name}"]]<-list(rsq=sm$r.sq,dev=sm$dev.expl,score=as.numeric(m$gcv.ubre),'
             f"aic=AIC(m),ll=as.numeric(logLik(m)),edf=as.numeric(sm$s.table[,1]),"
             f"refdf=as.numeric(sm$s.table[,2]),F=as.numeric(sm$s.table[,3]),p=as.numeric(sm$s.table[,4]),"
-            f"ptab=sm$p.table[,c(1,2,4)],se=as.numeric(pr$se.fit),fit=as.numeric(pr$fit))"
+            f"ptab=sm$p.table[,c(1,2,4)],pterms=if(!is.null(sm$pTerms.table)) sm$pTerms.table else NULL,"
+            f"se=as.numeric(pr$se.fit),fit=as.numeric(pr$fit))"
         )
     script = (
         "suppressPackageStartupMessages({library(mgcv);library(jsonlite)})\n"
@@ -96,6 +97,13 @@ def test_summary_inference_vs_r(data_and_r, case):
         ptab_py.append((float(parts[1]), float(parts[2]), float(parts[4])))
     ptab_r = np.array(o["ptab"], dtype=float).reshape(len(ptab_py), 3)
     assert np.allclose(ptab_py, ptab_r, atol=2e-3)
+
+    param = [i for i in range(len(gam._terms)) if i not in smooth]
+    if param and o["pterms"] is not None:
+        pterms_r = np.array(o["pterms"], dtype=float).reshape(len(param), 3)
+        assert np.allclose([st["ref_df_per_term"][i] for i in param], pterms_r[:, 0], rtol=1e-6)
+        assert np.allclose([st["f_stat_per_term"][i] for i in param], pterms_r[:, 1], rtol=2e-3)
+        assert np.allclose([st["p_values_per_term"][i] for i in param], pterms_r[:, 2], atol=1e-4)
 
 
 def test_predict_terms_and_se_fit_vs_r():
@@ -161,44 +169,54 @@ def test_varying_coefficient_by_vs_r():
     assert np.isclose(st["scale"], r["sig2"], rtol=1e-3)
     assert np.allclose(st["sp"], r["sp"], rtol=5e-2)
     assert np.allclose(st["f_stat_per_term"], r["F"], rtol=5e-2)
+    assert np.allclose(st["p_values_per_term"], r["p"], atol=1e-6)
     assert "s(0,by=1)" in gm.summary()
 
 
 def test_random_effects_re_vs_r():
-    """Verify random effect smooth s(g, bs='re') against R mgcv."""
+    """Verify random effect smooth s(g, bs='re') and reTest/recov against R mgcv."""
     if not RSCRIPT_PATH:
         pytest.skip("Rscript not installed.")
     rng = np.random.default_rng(99)
     n = 90
     g = rng.integers(0, 5, n)
+    g2 = rng.integers(0, 4, n)
     x = rng.uniform(0, 1, n)
     eff = np.array([-0.6, 0.3, 0.9, -0.4, 0.0])
-    y = np.sin(2 * np.pi * x) + eff[g] + rng.normal(0, 0.1, n)
+    eff2 = np.array([0.2, -0.2, 0.1, -0.1])
+    y = np.sin(2 * np.pi * x) + eff[g] + eff2[g2] + rng.normal(0, 0.25, n)
     f = lambda a: ",".join(f"{v:.15g}" for v in a)
     script = f"""
     suppressPackageStartupMessages({{library(mgcv);library(jsonlite)}})
-    d <- data.frame(x=c({f(x)}), g=factor(c({f(g)})), y=c({f(y)}))
-    m <- gam(y ~ s(x, bs="cr", k=6) + s(g, bs="re"), data=d, method="REML")
+    d <- data.frame(x=c({f(x)}), g=factor(c({f(g)})), g2=factor(c({f(g2)})), y=c({f(y)}))
+    m <- gam(y ~ s(x, bs="cr", k=6) + s(g, bs="re") + s(g2, bs="re"), data=d, method="REML")
+    sm <- summary(m)
     cat(toJSON(list(
       fit=as.numeric(fitted(m)),
       edf=as.numeric(sum(m$edf)),
       sp=as.numeric(m$sp),
-      sig2=as.numeric(m$sig2)
+      sig2=as.numeric(m$sig2),
+      refdf=as.numeric(sm$s.table[,2]),
+      F=as.numeric(sm$s.table[,3]),
+      p=as.numeric(sm$s.table[,4])
     ), digits=14))
     """
     r = run_r_gam(script)
-    X = np.column_stack([x, g.astype(float)])
-    gm = GAMCore("s(0, bs='cr', k=6) + s(1, bs='re')", method="REML").fit(X, y)
+    X = np.column_stack([x, g.astype(float), g2.astype(float)])
+    gm = GAMCore("s(0, bs='cr', k=6) + s(1, bs='re') + s(2, bs='re')", method="REML").fit(X, y)
     st = gm.statistics_
 
     assert np.max(np.abs(gm.predict(X) - np.array(r["fit"]))) < 1e-3
     assert np.isclose(st["edof"], r["edf"], atol=1e-3)
     assert np.isclose(st["scale"], r["sig2"], rtol=1e-3)
     assert np.allclose(st["sp"], r["sp"], rtol=5e-2)
+    assert np.allclose(st["ref_df_per_term"], r["refdf"], rtol=1e-3)
+    assert np.allclose(st["f_stat_per_term"], r["F"], rtol=5e-3)
+    assert np.allclose(st["p_values_per_term"], r["p"], atol=1e-4)
 
 
 def test_select_shrinkage_smooths():
-    """Verify select=True enables shrinkage bases (ts/cs) penalizing null space."""
+    """Verify select=True and null.space.dim==0 smooths (ts/cs/cc/cp) match R mgcv."""
     rng = np.random.default_rng(7)
     n = 60
     X = rng.uniform(0, 1, (n, 2))
@@ -209,3 +227,31 @@ def test_select_shrinkage_smooths():
     assert gm._terms[0].bs == "ts"
     assert gm._terms[1].bs == "cs"
     assert gm.statistics_["edf_per_term"][1] < 1.5
+    assert gm.statistics_["p_values_per_term"][0] < 1e-6
+    assert gm.statistics_["p_values_per_term"][1] > 0.05
+    gm_ps_bs = GAMCore("s(0, bs='ps', k=8) + s(1, bs='bs', k=8)", select=True, method="REML").fit(X, y)
+    assert gm_ps_bs.statistics_["edf_per_term"][1] < 1.0
+    assert gm_ps_bs.statistics_["p_values_per_term"][0] < 1e-6
+    assert gm_ps_bs.statistics_["p_values_per_term"][1] > 0.05
+    if RSCRIPT_PATH:
+        f = lambda a: ",".join(f"{v:.15g}" for v in a)
+        r = run_r_gam(f"""
+        suppressPackageStartupMessages({{library(mgcv);library(jsonlite)}})
+        d <- data.frame(x0=c({f(X[:,0])}), x1=c({f(X[:,1])}), y=c({f(y)}))
+        m_sh <- gam(y ~ s(x0, bs="ts", k=8) + s(x1, bs="cs", k=8), data=d, method="REML")
+        sm_sh <- summary(m_sh)
+        m <- gam(y ~ s(x0, bs="cc", k=8) + s(x1, bs="cp", k=8), data=d, method="REML")
+        sm <- summary(m)
+        cat(toJSON(list(
+          sh_refdf=as.numeric(sm_sh$s.table[,2]), sh_F=as.numeric(sm_sh$s.table[,3]), sh_p=as.numeric(sm_sh$s.table[,4]),
+          refdf=as.numeric(sm$s.table[,2]), F=as.numeric(sm$s.table[,3]), p=as.numeric(sm$s.table[,4])
+        ), digits=14))
+        """)
+        assert np.allclose(gm.statistics_["ref_df_per_term"], r["sh_refdf"], rtol=1e-3)
+        assert np.allclose(gm.statistics_["f_stat_per_term"], r["sh_F"], rtol=1e-2, atol=2e-2)
+        assert np.allclose(gm.statistics_["p_values_per_term"], r["sh_p"], atol=6e-3)
+        gm_cyc = GAMCore("s(0, bs='cc', k=8) + s(1, bs='cp', k=8)", method="REML").fit(X, y)
+        st_cyc = gm_cyc.statistics_
+        assert np.allclose(st_cyc["ref_df_per_term"], r["refdf"], rtol=1e-3)
+        assert np.allclose(st_cyc["f_stat_per_term"], r["F"], rtol=2e-3)
+        assert np.allclose(st_cyc["p_values_per_term"], r["p"], atol=1e-4)
