@@ -30,11 +30,13 @@ class _WoodSplineTerm(_WoodTerm):
         constraint: Optional[str] = None,
         by: Optional[int] = None,
         select: bool = False,
+        absorb_cons: bool = True,
     ) -> None:
         self.feature = int(feature)
         self.k = int(k)
         self.bs = bs.lower()
         self.select = bool(select)
+        self.absorb_cons = bool(absorb_cons)
         if constraint is not None and constraint != "periodic":
             raise ValueError(
                 f"Unsupported constraint '{constraint}' for Wood backend. "
@@ -64,7 +66,7 @@ class _WoodSplineTerm(_WoodTerm):
             by_col = np.asarray(x[:, self.by], dtype=float).ravel()
             X_raw = X_raw * by_col[:, None]
 
-        if self.by is not None or self.bs == "re":
+        if self.by is not None or self.bs == "re" or not self.absorb_cons:
             X_abs = X_raw
             self._penalties = S_scaled
             self._Z = np.eye(X_raw.shape[1])
@@ -117,8 +119,10 @@ class _WoodTensorTerm(_WoodTerm):
         knots: Optional[Union[np.ndarray, List[Any]]] = None,
         interaction: bool = False,
         by: Optional[int] = None,
+        absorb_cons: bool = True,
     ) -> None:
         self.interaction = interaction
+        self.absorb_cons = bool(absorb_cons)
         self.kind = "ti" if interaction else "te"
         self.features = [int(f) for f in features]
         self.d = len(self.features)
@@ -199,7 +203,7 @@ class _WoodTensorTerm(_WoodTerm):
             by_col = np.asarray(x[:, self.by], dtype=float).ravel()
             X_te = X_te * by_col[:, None]
 
-        if self.interaction or self.by is not None:
+        if self.interaction or self.by is not None or not self.absorb_cons:
             X_abs, self._penalties = X_te, S_scaled
             self._Z = np.eye(X_te.shape[1])
         else:
@@ -248,10 +252,11 @@ _WoodLinearTerm = _LinearTerm
 
 
 def instantiate_wood_terms(
-    configs: List[Dict[str, Any]], select: bool = False
+    configs: List[Dict[str, Any]], select: bool = False, fit_intercept: bool = True
 ) -> List[_WoodTerm]:
     """Instantiate Wood term objects from parsed formula config dicts."""
     terms: List[_WoodTerm] = []
+    has_dropped_cons = fit_intercept
     for cfg in configs:
         kind = cfg["type"]
         feats = cfg["features"]
@@ -269,6 +274,10 @@ def instantiate_wood_terms(
                 bs_val = ["ts" if b == "tp" else ("cs" if b == "cr" else b) for b in bs_val]
 
         if kind == "s":
+            absorb = True
+            if not has_dropped_cons and by_val is None and bs_val != "re":
+                absorb = False
+                has_dropped_cons = True
             terms.append(
                 _WoodSplineTerm(
                     feature=feats[0],
@@ -280,10 +289,15 @@ def instantiate_wood_terms(
                     constraint=kw.pop("constraint", None),
                     by=by_val,
                     select=select,
+                    absorb_cons=absorb,
                 )
             )
         elif kind in ("te", "ti"):
             te_k = k_val if isinstance(k_val, (int, list)) else 5
+            absorb = True
+            if not has_dropped_cons and kind == "te" and by_val is None:
+                absorb = False
+                has_dropped_cons = True
             terms.append(
                 _WoodTensorTerm(
                     features=feats,
@@ -294,6 +308,7 @@ def instantiate_wood_terms(
                     knots=kw.pop("knots", None),
                     interaction=kind == "ti",
                     by=by_val,
+                    absorb_cons=absorb,
                 )
             )
         elif kind == "f":

@@ -1,6 +1,21 @@
 Changelog
 =========
 
+Version 1.1.2
+-------------
+*Released 2026-10-30*
+
+* **Audit Fixes, Knot Capping & CI Automation**:
+  - Fixed ``fit_intercept=False`` handling in Wood backend by omitting the sum-to-zero identifiability constraint on the primary smooth term.
+  - Added support for documented shape constraint aliases (``monotonic_inc`` and ``monotonic_dec``) in Eilers backend.
+  - Added robust 0D scalar and 1D vector evaluation support across ``predict()``, ``confidence_intervals()``, and ``partial_dependence()``.
+  - Enforced formula validation disallowing extraneous positional arguments in univariate terms (``s()``, ``l()``, ``f()``).
+  - Capped thin plate regression spline unique knots to 2,000 via ``_place_knots`` to prevent memory and compute explosion on large sample sizes.
+  - Handled categorical string factor variables in model fitting, float casting, and summary reports.
+  - Resolved multi-term partial decomposition plotting for categorical factors.
+  - Added automated GitHub Actions test matrix across Python 3.9–3.12 and automated Sphinx documentation builds with ``-W`` warnings enforcement.
+  - Added test dependencies to ``pyproject.toml`` optional dependencies.
+
 Version 1.1.1
 -------------
 *Released 2026-10-30*

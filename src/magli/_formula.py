@@ -98,6 +98,11 @@ def parse_formula(formula: str) -> List[Dict[str, Any]]:
             raise ValueError(
                 f"'{func_name}()' requires at least {min_feats} feature index(es)."
             )
+        if func_name in ("s", "f", "l") and len(positional) > 1:
+            raise ValueError(
+                f"'{func_name}()' accepts only 1 positional feature index (got {len(positional)}). "
+                f"Use keyword arguments (e.g. '{func_name}({positional[0]}, k={positional[1]})')."
+            )
         result.append(
             {
                 "type": func_name,

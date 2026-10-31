@@ -254,3 +254,75 @@ def test_weights_both_backends():
         with pytest.raises(ValueError, match="weights must be finite"):
             LinGAM(backend=backend).fit(x, y, weights=np.zeros_like(y))
 
+
+def test_audit_fixes_comprehensive():
+    """Verify bug fixes for fit_intercept=False, aliases, scalar eval, 1D pdep, formula args, strings."""
+    rng = np.random.default_rng(42)
+    x = np.linspace(0.1, 1.0, 50)
+    y = 2.0 * x
+
+    # 1. fit_intercept=False on non-zero mean data
+    for backend in ("wood", "eilers"):
+        m = GAMCore("s(0, k=8)", fit_intercept=False, backend=backend).fit(x, y)
+        assert m.is_fitted
+        assert m.deviance_explained() > 0.99
+        assert np.allclose(m.predict(x), y, atol=1e-2)
+
+    # 2. Documented constraint aliases 'monotonic_inc' and 'monotonic_dec'
+    y_noisy = np.exp(x) + rng.normal(0, 0.05, len(x))
+    for c_name in ("monotonic_inc", "mono_inc"):
+        m_inc = LinGAM(n_splines=10, constraint=c_name, backend="eilers").fit(x, y_noisy)
+        preds = m_inc.predict(np.linspace(0.1, 1.0, 100))
+        assert np.all(np.diff(preds) >= -1e-6)
+    for c_name in ("monotonic_dec", "mono_dec"):
+        m_dec = LinGAM(n_splines=10, constraint=c_name, backend="eilers").fit(x, -y_noisy)
+        preds = m_dec.predict(np.linspace(0.1, 1.0, 100))
+        assert np.all(np.diff(preds) <= 1e-6)
+
+    # 3. Scalar inputs to predict and intervals
+    m_single = LinGAM(k=8, backend="wood").fit(x, y)
+    assert m_single.predict(0.5).shape == (1,)
+    assert m_single.confidence_intervals(0.5).shape == (1, 2)
+    assert m_single.prediction_intervals(0.5).shape == (1, 2)
+
+    # 4. Multi-feature 1-row predict and 1D partial_dependence
+    X_2d = np.column_stack([x, rng.uniform(0, 1, len(x))])
+    y_2d = 2.0 * x + 3.0 * X_2d[:, 1]
+    for backend in ("wood", "eilers"):
+        m_2d = GAMCore("s(0, k=8) + s(1, k=8)", backend=backend).fit(X_2d, y_2d)
+        assert m_2d.predict([0.5, 0.2]).shape == (1,)
+        grid_1d = np.linspace(0, 1, 25)
+        pdep0 = m_2d.partial_dependence(0, grid_1d)
+        pdep1 = m_2d.partial_dependence(1, grid_1d)
+        assert pdep0.shape == (25,)
+        assert pdep1.shape == (25,)
+
+    # 5. Formula parser rejects extra positional arguments
+    with pytest.raises(ValueError, match="accepts only 1 positional"):
+        GAMCore("s(0, 10)")
+    with pytest.raises(ValueError, match="accepts only 1 positional"):
+        GAMCore("l(0, 1)")
+
+    # 6. Categorical string factor variables & NaN validation with string columns
+    X_str = np.array([["ctrl", 0.1], ["treat", 0.5], ["ctrl", 0.2], ["treat", 0.6], ["treat", 0.7]], dtype=object)
+    y_str = np.array([1.0, 3.0, 1.2, 2.9, 3.2])
+    for backend in ("wood", "eilers"):
+        m_cat = GAMCore("f(0) + s(1, k=4)", backend=backend).fit(X_str, y_str)
+        assert m_cat.is_fitted
+        summary_str = m_cat.summary()
+        assert "f(0)" in summary_str
+
+        # NaN validation in presence of string column
+        X_nan = X_str.copy()
+        X_nan[0, 1] = np.nan
+        with pytest.raises(ValueError, match="contains NaN or infinity"):
+            GAMCore("f(0) + s(1, k=4)", backend=backend).fit(X_nan, y_str)
+
+    # 7. Thin-plate spline knot capping > 2000 points
+    from magli.wood._smooths import build_tp_basis
+    x_large = np.linspace(0, 1, 2500)
+    X_tp, S_tp, info_tp = build_tp_basis(x_large, k=10)
+    assert X_tp.shape == (2500, 10)
+    assert len(info_tp["Xu"]) == 2000
+
+

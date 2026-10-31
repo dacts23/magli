@@ -65,7 +65,7 @@ class GAMCore(_GAMBase):
         configs = parse_formula(formula)
         self._term_configs = configs
         self._terms: List[_WoodTerm] = instantiate_wood_terms(
-            configs, select=self.select
+            configs, select=self.select, fit_intercept=self.fit_intercept
         )
 
         self._coef_slices: List[Tuple[int, int]] = []
@@ -99,12 +99,20 @@ class GAMCore(_GAMBase):
         self : GAMCore
             Fitted model instance.
         """
-        x_arr = np.asarray(x, dtype=float)
-        y_arr = np.asarray(y, dtype=float).ravel()
-        if not np.all(np.isfinite(x_arr)) or not np.all(np.isfinite(y_arr)):
-            raise ValueError("Input data contains NaN or infinity.")
+        x_arr = np.asarray(x)
         if x_arr.ndim == 1:
             x_arr = x_arr.reshape(-1, 1)
+        for col_idx in range(x_arr.shape[1]):
+            col = x_arr[:, col_idx]
+            try:
+                col_float = np.asarray(col, dtype=float)
+            except (ValueError, TypeError):
+                continue
+            if not np.all(np.isfinite(col_float)):
+                raise ValueError("Input data contains NaN or infinity.")
+        y_arr = np.asarray(y, dtype=float).ravel()
+        if not np.all(np.isfinite(y_arr)):
+            raise ValueError("Input data contains NaN or infinity.")
         w_arr = _validate_weights(weights, len(y_arr))
 
         self._compile(x_arr)
@@ -258,7 +266,7 @@ class GAMCore(_GAMBase):
                 select=self.select,
             )
             cand_model._terms = instantiate_wood_terms(
-                configs_copy, select=self.select
+                configs_copy, select=self.select, fit_intercept=self.fit_intercept
             )
             cand_model._term_configs = configs_copy
             try:

@@ -37,10 +37,10 @@ def shape_constraint_penalty(
     k = len(coef)
     if k <= 1:
         return np.zeros((k, k))
-    if constraint in ("mono_inc", "mono_dec"):
+    if constraint in ("mono_inc", "mono_dec", "monotonic_inc", "monotonic_dec"):
         D = np.diff(np.eye(k), n=1, axis=0)
         d1 = np.diff(coef)
-        mask = (d1 < 0) if constraint == "mono_inc" else (d1 > 0)
+        mask = (d1 < 0) if constraint in ("mono_inc", "monotonic_inc") else (d1 > 0)
     elif constraint in ("convex", "concave"):
         if k <= 2:
             return np.zeros((k, k))

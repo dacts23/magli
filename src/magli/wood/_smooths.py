@@ -495,25 +495,39 @@ def build_tp_basis(
             f"Covariate has only {nu} unique values, cannot support basis dimension k={k}."
         )
 
-    E = _eta_1d(xu[:, None] - xu[None, :])
-    T = np.column_stack([np.ones(nu), xu])
-
-    eigvals, eigvecs = np.linalg.eigh(E)
-    top_k = np.argsort(np.abs(eigvals))[::-1][:k]
-    sort_idx = top_k[np.argsort(eigvals[top_k])[::-1]]
-    v_k, U_k = eigvals[sort_idx], eigvecs[:, sort_idx]
-
-    Q = _wood_qt(T.T @ U_k)
-    X_u = (U_k * v_k[None, :]) @ Q
-    X_u[:, k - M :] = T
-    UkZ = U_k @ Q[:, : k - M]
+    max_knots = 2000
+    if nu > max_knots:
+        xk = _place_knots(xu, max_knots)
+        E = _eta_1d(xk[:, None] - xk[None, :])
+        T = np.column_stack([np.ones(len(xk)), xk])
+        eigvals, eigvecs = np.linalg.eigh(E)
+        top_k = np.argsort(np.abs(eigvals))[::-1][:k]
+        sort_idx = top_k[np.argsort(eigvals[top_k])[::-1]]
+        v_k, U_k = eigvals[sort_idx], eigvecs[:, sort_idx]
+        Q = _wood_qt(T.T @ U_k)
+        UkZ = U_k @ Q[:, : k - M]
+        X_smooth = _eta_1d(x_c[:, None] - xk[None, :]) @ UkZ
+        X = np.column_stack([X_smooth, np.ones(len(x_c)), x_c])
+        knot_coords = xk
+    else:
+        E = _eta_1d(xu[:, None] - xu[None, :])
+        T = np.column_stack([np.ones(nu), xu])
+        eigvals, eigvecs = np.linalg.eigh(E)
+        top_k = np.argsort(np.abs(eigvals))[::-1][:k]
+        sort_idx = top_k[np.argsort(eigvals[top_k])[::-1]]
+        v_k, U_k = eigvals[sort_idx], eigvecs[:, sort_idx]
+        Q = _wood_qt(T.T @ U_k)
+        X_u = (U_k * v_k[None, :]) @ Q
+        X_u[:, k - M :] = T
+        UkZ = U_k @ Q[:, : k - M]
+        X = X_u[inv_idx, :]
+        knot_coords = xu
 
     S_full = Q.T @ (v_k[:, None] * Q)
     S_full[k - M :, :] = 0.0
     S_full[:, k - M :] = 0.0
     S = 0.5 * (S_full + S_full.T)
 
-    X = X_u[inv_idx, :]
     col_rms = np.sqrt(np.mean(X**2, axis=0))
     col_rms[col_rms == 0.0] = 1.0
     X = X / col_rms[None, :]
@@ -533,7 +547,7 @@ def build_tp_basis(
             "bs": "ts" if shrink else "tp",
             "shift": x_mean,
             "col_rms": col_rms,
-            "Xu": xu,
+            "Xu": knot_coords,
             "UkZ": UkZ,
             "k": k,
             "M": M,

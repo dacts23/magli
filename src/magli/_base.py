@@ -96,6 +96,7 @@ class _GAMBase:
     _check_is_fitted = _check_fitted
 
     def _compile(self, x: np.ndarray) -> None:
+        self.n_features_in_ = x.shape[1] if x.ndim > 1 else 1
         for term in self._terms:
             term.compile(x)
 
@@ -111,7 +112,7 @@ class _GAMBase:
         blocks = [t.build_columns(x) for t in self._terms]
         if self.fit_intercept:
             blocks.append(np.ones((len(x), 1), dtype=float))
-        return np.hstack(blocks)
+        return np.hstack(blocks).astype(float)
 
     def predict(
         self,
@@ -186,8 +187,14 @@ class _GAMBase:
         """
         self._check_fitted()
         x_arr = np.asarray(x, dtype=float)
-        if x_arr.ndim == 1:
-            x_arr = x_arr.reshape(-1, 1)
+        n_feat = getattr(self, "n_features_in_", 1)
+        if x_arr.ndim == 0:
+            x_arr = x_arr.reshape(1, 1)
+        elif x_arr.ndim == 1:
+            if n_feat > 1 and len(x_arr) == n_feat:
+                x_arr = x_arr.reshape(1, -1)
+            else:
+                x_arr = x_arr.reshape(-1, 1)
 
         cov = self.statistics_.get("cov")
         if type == "terms":
@@ -272,8 +279,17 @@ class _GAMBase:
                 f"term_idx {term_idx} out of range (0..{len(self._terms) - 1})."
             )
         x_arr = np.asarray(x, dtype=float)
+        if x_arr.ndim == 0:
+            x_arr = x_arr.reshape(1)
         if x_arr.ndim == 1:
-            x_arr = x_arr.reshape(-1, 1)
+            term = self._terms[term_idx]
+            feat_idx = getattr(term, "feature", None)
+            if feat_idx is not None and feat_idx > 0:
+                mat = np.zeros((len(x_arr), feat_idx + 1), dtype=float)
+                mat[:, feat_idx] = x_arr
+                x_arr = mat
+            else:
+                x_arr = x_arr.reshape(-1, 1)
         B_term = self._terms[term_idx].build_columns(x_arr)
         start, end = self._coef_slices[term_idx]
         contrib = B_term @ self.coef_[start:end]
@@ -398,8 +414,14 @@ class _GAMBase:
     ) -> np.ndarray:
         self._check_fitted()
         x_arr = np.asarray(x, dtype=float)
-        if x_arr.ndim == 1:
-            x_arr = x_arr.reshape(-1, 1)
+        n_feat = getattr(self, "n_features_in_", 1)
+        if x_arr.ndim == 0:
+            x_arr = x_arr.reshape(1, 1)
+        elif x_arr.ndim == 1:
+            if n_feat > 1 and len(x_arr) == n_feat:
+                x_arr = x_arr.reshape(1, -1)
+            else:
+                x_arr = x_arr.reshape(-1, 1)
         X = self._build_model_matrix(x_arr)
         lp = X @ self.coef_
 
@@ -576,7 +598,8 @@ class _GAMBase:
                     b, se_b = self.coef_[k], self.statistics_["se"][k]
                     tb = b / max(se_b, 1e-12)
                     pb = float(2.0 * stats.t.sf(np.abs(tb), df=df_res))
-                    param_rows.append((f"f({t.feature}){level:g}", b, se_b, tb, pb))
+                    lvl_str = f"{level:g}" if isinstance(level, (int, float, np.number)) else str(level)
+                    param_rows.append((f"f({t.feature}){lvl_str}", b, se_b, tb, pb))
             if "LinearTerm" in tname:
                 start, _ = self._coef_slices[i]
                 b = self.coef_[start]
@@ -659,7 +682,7 @@ class _GAMBase:
         import matplotlib.pyplot as plt
 
         self._check_fitted()
-        x_arr = np.asarray(x, dtype=float)
+        x_arr = np.asarray(x)
         y_arr = np.asarray(y, dtype=float).ravel()
         if x_arr.ndim == 1:
             x_arr = x_arr.reshape(-1, 1)
@@ -680,42 +703,60 @@ class _GAMBase:
         gs = fig.add_gridspec(n_rows, n_cols, hspace=0.4, wspace=0.35)
         ax_overall = fig.add_subplot(gs[0, :])
 
-        feat_mins = np.min(x_arr, axis=0)
-        feat_maxs = np.max(x_arr, axis=0)
-        medians = np.median(x_arr, axis=0)
-
+        medians_list = []
+        feat_mins = []
+        feat_maxs = []
         feat_grids = []
         for j in range(p_predictors):
-            rng = (feat_maxs[j] - feat_mins[j]) or 1.0
-            feat_grids.append(
-                np.linspace(
-                    feat_mins[j] - extrap_frac * rng,
-                    feat_maxs[j] + extrap_frac * rng,
+            col = x_arr[:, j]
+            try:
+                col_f = np.asarray(col, dtype=float)
+                c_min = float(np.min(col_f))
+                c_max = float(np.max(col_f))
+                c_med = float(np.median(col_f))
+                c_rng = (c_max - c_min) or 1.0
+                grid = np.linspace(
+                    c_min - extrap_frac * c_rng,
+                    c_max + extrap_frac * c_rng,
                     n_grid,
                 )
-            )
+            except (ValueError, TypeError):
+                c_min, c_max, c_med = 0.0, 1.0, col[0]
+                grid = np.linspace(0.0, 1.0, n_grid)
+            feat_mins.append(c_min)
+            feat_maxs.append(c_max)
+            medians_list.append(c_med)
+            feat_grids.append(grid)
+        medians = np.array(medians_list, dtype=object)
+
+        first_term = self._terms[0] if self._terms else None
+        if first_term is not None:
+            first_feat = getattr(first_term, "feature", getattr(first_term, "features", [0])[0])
+            first_feat = first_feat if first_feat < p_predictors else 0
+        else:
+            first_feat = 0
 
         x_overall = np.tile(medians, (n_grid, 1))
-        x_overall[:, 0] = feat_grids[0]
+        x_overall[:, first_feat] = feat_grids[first_feat]
         y_overall = self.predict(x_overall)
-        sort_idx = np.argsort(x_overall[:, 0])
+        sort_idx = np.argsort(x_overall[:, first_feat])
         ax_overall.plot(
-            x_overall[sort_idx, 0], y_overall[sort_idx], "C0-", lw=2, label="GAM fit"
+            x_overall[sort_idx, first_feat], y_overall[sort_idx], "C0-", lw=2, label="GAM fit"
         )
         ax_overall.scatter(
-            x_arr[:, 0], y_arr, alpha=0.4, color="gray", s=10, label="Data"
+            x_arr[:, first_feat], y_arr, alpha=0.4, color="gray", s=10, label="Data"
         )
         if extrap_frac > 0:
-            ax_overall.axvspan(feat_grids[0][0], feat_mins[0], alpha=0.06, color="red")
+            ax_overall.axvspan(feat_grids[first_feat][0], feat_mins[first_feat], alpha=0.06, color="red")
             ax_overall.axvspan(
-                feat_maxs[0],
-                feat_grids[0][-1],
+                feat_maxs[first_feat],
+                feat_grids[first_feat][-1],
                 alpha=0.06,
                 color="red",
                 label="Extrapolated",
             )
         ax_overall.set(
-            xlabel=_fname(0) if p_predictors > 1 else "x",
+            xlabel=_fname(first_feat) if p_predictors > 1 else "x",
             ylabel="y",
             title=self._overall_plot_title(),
         )

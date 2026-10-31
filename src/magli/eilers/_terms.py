@@ -14,7 +14,7 @@ from ._penalty import (
 )
 
 _CONSTRAINTS = frozenset({
-    None, 'mono_inc', 'mono_dec', 'convex', 'concave', 'periodic',
+    None, 'mono_inc', 'mono_dec', 'monotonic_inc', 'monotonic_dec', 'convex', 'concave', 'periodic',
 })
 _SHAPE_CONSTRAINTS = frozenset({'mono_inc', 'mono_dec', 'convex', 'concave'})
 
@@ -48,6 +48,8 @@ class _SplineTerm(_Term):
         spline_order: int = 3,
         constraint: Optional[str] = None,
     ) -> None:
+        if constraint in ('monotonic_inc', 'monotonic_dec'):
+            constraint = 'mono_inc' if constraint == 'monotonic_inc' else 'mono_dec'
         if constraint not in _CONSTRAINTS:
             raise ValueError(
                 f"Unknown constraint '{constraint}'. "
@@ -73,12 +75,12 @@ class _SplineTerm(_Term):
         self._edge_knots: Optional[np.ndarray] = None
 
     def compile(self, x: np.ndarray) -> None:
-        col = np.asarray(x[:, self.feature]).ravel()
+        col = np.asarray(x[:, self.feature], dtype=float).ravel()
         self._edge_knots = np.array([col.min(), col.max()])
 
     def build_columns(self, x: np.ndarray) -> np.ndarray:
         return b_spline_basis(
-            x[:, self.feature],
+            np.asarray(x[:, self.feature], dtype=float),
             self.n_splines,
             self.spline_order,
             self._edge_knots,  # type: ignore[arg-type]
