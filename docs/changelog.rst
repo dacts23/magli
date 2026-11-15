@@ -1,6 +1,16 @@
 Changelog
 =========
 
+Version 2.0.0
+-------------
+*Released 2026-11-15*
+
+* **Breaking: Explicit Backend Modules (``magli.wood`` & ``magli.eilers``)**:
+  - Removed the top-level ``magli.GAM``, ``magli.LinGAM``, ``magli.GAMCore``, and ``backend=`` dispatcher; users now import directly from :mod:`magli.wood` or :mod:`magli.eilers`.
+  - Achieved full numerical parity with R ``mgcv`` across ``te()``/``ti()`` ``np=TRUE`` marginal reparameterization, ``select=True`` null-space penalty ($H = U_0 U_0^T$) on both ``s()`` and ``te()``/``ti()``, mixed fixed/free ``sp`` scale estimation, ``ps``/``bs`` out-of-range linear extrapolation, ``k=3`` ``cr`` splines, and scalar ``m`` coercion.
+  - Hardened ``parse_formula()`` and ``_validate_xyw()`` against non-string formulas, ``**kwargs`` unpacking, invalid array dimensions/empty shapes, and mixed-type object categorical ``NaN``/``None`` values.
+  - Hardened ``solve_pirls`` against ``LinAlgError`` at huge ``lam``, fixed ``gridsearch()`` flat-list and per-marginal ``te()`` order handling, surfaced errors when all ``wood`` grid candidates fail, fixed leading categorical ``plot_decomposition()`` panels, and accelerated large thin-plate (``tp``/``ts``) eigendecompositions with ``eigsh``.
+
 Version 1.1.3
 -------------
 *Released 2026-11-14*

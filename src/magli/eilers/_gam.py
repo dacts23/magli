@@ -371,10 +371,19 @@ class GAMCore(_GAMBase):
                 if i in search_idx and isinstance(t, (_SplineTerm, _TensorTerm))
             )
 
-            if not isinstance(n_splines_grids, list):
-                n_splines_grids = [np.atleast_1d(n_splines_grids)] * max(
-                    n_nsp_slots, 1
-                )
+            if isinstance(n_splines_grids, list) and len(n_splines_grids) == 0:
+                raise ValueError("n_splines_grids must not be empty.")
+            is_nested_nsp = isinstance(n_splines_grids, list) and any(
+                isinstance(v, (list, tuple, np.ndarray)) for v in n_splines_grids
+            )
+            if not is_nested_nsp:
+                shared = np.atleast_1d(n_splines_grids)
+                if n_nsp_searched and n_nsp_searched != n_nsp_slots:
+                    n_splines_grids = self._expand_partial_grids(
+                        [shared] * n_nsp_searched, search_idx, "nsp"
+                    )
+                else:
+                    n_splines_grids = [shared] * max(n_nsp_slots, 1)
             elif (
                 len(n_splines_grids) == n_nsp_searched
                 and n_nsp_searched != n_nsp_slots
@@ -415,9 +424,10 @@ class GAMCore(_GAMBase):
                     k_combo_elements.append(vals)
                     nsp_idx += 1
                 elif isinstance(t, _TensorTerm):
-                    min_k = t.spline_order + 1
                     grids = []
                     for d_i in range(t.d):
+                        deg_i = t.spline_order_per[d_i]
+                        min_k = deg_i + 1
                         g_vals = [
                             int(v)
                             for v in np.atleast_1d(n_splines_grids[nsp_idx + d_i])
@@ -426,7 +436,7 @@ class GAMCore(_GAMBase):
                             if v < min_k:
                                 raise ValueError(
                                     f"n_splines_grids[{nsp_idx + d_i}] has value {v}, "
-                                    f"must be >= {min_k} for spline_order ({t.spline_order})."
+                                    f"must be >= {min_k} for spline_order ({deg_i})."
                                 )
                         grids.append(g_vals)
                     k_combo_elements.append(
@@ -457,6 +467,12 @@ class GAMCore(_GAMBase):
         if lam_grids is None:
             lam_grids = np.logspace(-3, 3, 11)
 
+        if isinstance(lam_grids, list) and len(lam_grids) == 0:
+            raise ValueError("lam_grids must not be empty.")
+        is_nested_lam = isinstance(lam_grids, list) and any(
+            isinstance(v, (list, tuple, np.ndarray)) for v in lam_grids
+        )
+
         if isinstance(lam_grids, np.ndarray) and lam_grids.ndim == 2:
             n_cols = lam_grids.shape[1]
             if n_cols == len(searched_slot_indices):
@@ -473,7 +489,7 @@ class GAMCore(_GAMBase):
                     f"2D lam_grids has {n_cols} columns, expected {len(searched_slot_indices)} "
                     f"for searched slots or {total_slots} for all slots."
                 )
-        elif isinstance(lam_grids, list) and len(lam_grids) > 1:
+        elif is_nested_lam and len(lam_grids) > 1:
             n_searched = len(searched_slot_indices)
             if len(lam_grids) == n_searched and n_searched != total_slots:
                 lam_grids = self._expand_partial_grids(
@@ -497,7 +513,7 @@ class GAMCore(_GAMBase):
                 final_combos.append(tuple(float(v) for v in combo))
             lam_combos = list(dict.fromkeys(final_combos))
         else:
-            sub = lam_grids[0] if isinstance(lam_grids, list) else lam_grids
+            sub = lam_grids[0] if is_nested_lam else lam_grids
             lam_combos = []
             for val in np.atleast_1d(sub):
                 combo = list(default_fixed)
@@ -543,7 +559,7 @@ class GAMCore(_GAMBase):
             terms_copy = instantiate_terms(configs_copy, self.spline_order)
             for t in terms_copy:
                 t.compile(x)
-            X_k = _build_matrix_from_terms(terms_copy, x, self.fit_intercept)
+            X_k = self._hstack_terms(terms_copy, x, self.fit_intercept)
             if w_sqrt is not None:
                 X_k = X_k * w_sqrt[:, None]
             Q, R = np.linalg.qr(X_k)
@@ -730,13 +746,3 @@ def _precompute_penalty_bases(
         off += t.n_coefs
     return bases_list, off + (1 if fit_intercept else 0)
 
-
-def _build_matrix_from_terms(
-    terms: List[_Term],
-    x: np.ndarray,
-    fit_intercept: bool,
-) -> np.ndarray:
-    blocks = [t.build_columns(x) for t in terms]
-    if fit_intercept:
-        blocks.append(np.ones((len(x), 1)))
-    return np.hstack(blocks)

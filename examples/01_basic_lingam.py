@@ -8,7 +8,8 @@ Demonstrates fit, predict, confidence intervals, and plotting.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import LinGAM
+from magli.eilers import LinGAM as EilersLinGAM
+from magli.wood import LinGAM as WoodLinGAM
 
 np.random.seed(42)
 
@@ -17,7 +18,7 @@ x = np.linspace(0, 1, 300)
 y = np.sin(2 * np.pi * x) + np.random.normal(0, 0.2, len(x))
 
 # Fit with automatic grid search
-model = LinGAM(backend="eilers")
+model = EilersLinGAM()
 model.gridsearch(x, y)
 
 print("=== Basic LinGAM ===")
@@ -59,7 +60,7 @@ plt.show()
 # Same data, each backend's idiomatic tuning: Eilers-Marx uses a discrete GCV
 # grid search (above), Wood estimates the smoothing parameter automatically
 # via REML. Both should recover the same sine curve with similar EDF/RSS.
-wood_model = LinGAM(k=model.n_splines, bs="cr", backend="wood")
+wood_model = WoodLinGAM(k=model.n_splines, bs="cr")
 wood_model.fit(x, y)
 print("\n--- Backend comparison: Eilers-Marx (B-splines + GCV) vs Wood (cubic + REML) ---")
 print(f"{'Metric':<22}{'Eilers-Marx':>12}{'Wood':>12}")

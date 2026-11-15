@@ -56,7 +56,8 @@ def parse_formula(formula: str) -> List[Dict[str, Any]]:
 
     See Also
     --------
-    magli.GAMCore : Model class taking formula strings.
+    magli.wood.GAMCore : Wood backend model class taking formula strings.
+    magli.eilers.GAMCore : Eilers backend model class taking formula strings.
 
     Examples
     --------
@@ -75,8 +76,8 @@ def parse_formula(formula: str) -> List[Dict[str, Any]]:
     >>> terms[1]['features']
     [1, 2]
     """
-    if not formula or not formula.strip():
-        raise ValueError("Formula string is empty.")
+    if not isinstance(formula, str) or not formula.strip():
+        raise ValueError("Formula must be a non-empty string.")
     try:
         tree = ast.parse(formula.strip(), mode="eval").body
     except SyntaxError as exc:
@@ -91,8 +92,12 @@ def parse_formula(formula: str) -> List[Dict[str, Any]]:
             raise ValueError(
                 f"Unknown term type '{func_name}'. Expected s, te, ti, f, or l."
             )
+        if any(kw.arg is None for kw in node.keywords):
+            raise ValueError(
+                f"Starred '**kwargs' unpacking is not supported in formula '{formula}'."
+            )
         positional = [_eval_ast(a) for a in node.args]
-        kwargs = {kw.arg: _eval_ast(kw.value) for kw in node.keywords if kw.arg}
+        kwargs = {kw.arg: _eval_ast(kw.value) for kw in node.keywords}
         min_feats = 2 if func_name in ("te", "ti") else 1
         if len(positional) < min_feats:
             raise ValueError(

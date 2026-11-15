@@ -3,7 +3,8 @@
 import numpy as np
 import matplotlib.pyplot as plt
 
-from magli import GAMCore
+from magli.eilers import GAMCore as EilersGAMCore
+from magli.wood import GAMCore as WoodGAMCore
 from magli.eilers._terms import _FactorTerm, _LinearTerm, _SplineTerm, _TensorTerm
 
 
@@ -180,7 +181,7 @@ def _concrete_demo():
 
     # Fit
     print("\n  -- Model fit --")
-    model_std = GAMCore(formula, backend="eilers")
+    model_std = EilersGAMCore(formula)
     model_std.fit(X, strength)
     s_std = model_std.statistics_
     print(f"    GCV = {s_std['GCV']:.3f}")
@@ -221,7 +222,7 @@ def _concrete_demo():
 
     # -- Selective grid search demo --
     print("\n  -- Selective grid search: only search s(0) and f(2) --")
-    model_sel = GAMCore(formula, backend="eilers")
+    model_sel = EilersGAMCore(formula)
     model_sel.gridsearch(X, strength,
                          lam_grids=[np.logspace(-2, 2, 3)],
                          n_splines_grids=[np.arange(6, 13, 3)],
@@ -278,7 +279,7 @@ def _concrete_demo():
     # regression splines with REML-estimated smoothing in a single fit.
     # Note: f() defaults differ (Eilers-Marx one-hot + ridge vs Wood dummy).
     print("\n  -- Backend comparison: Eilers-Marx (above) vs Wood (REML) --")
-    model_wood = GAMCore(formula, backend="wood")
+    model_wood = WoodGAMCore(formula)
     model_wood.fit(X, strength)
     s_mg = model_wood.statistics_
     print(f"    {'Metric':<8}{'Eilers-Marx':>12}{'Wood':>10}")

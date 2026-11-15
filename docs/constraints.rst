@@ -2,7 +2,7 @@ Shape Constraints
 =================
 
 magli supports shape constraints on univariate spline terms (``s()``) and on
-``GAM`` / ``LinGAM``.  In ``backend='eilers'``, monotonicity and convexity
+``GAM`` / ``LinGAM``.  In :mod:`magli.eilers`, monotonicity and convexity
 constraints are enforced via ``pyGAM``'s iterative active-set asymmetric
 difference penalty on violated B-spline coefficient differences, while
 periodicity wraps the B-spline basis and penalty across the domain boundaries.
@@ -11,10 +11,10 @@ periodicity wraps the B-spline basis and penalty across the domain boundaries.
 
    Monotonicity and convexity constraints (``mono_inc``, ``mono_dec``,
    ``convex``, ``concave``) are provided by the Eilers-Marx engine
-   (``backend='eilers'``).  Periodic smooths (``constraint='periodic'``) are
-   supported in both engines, using wrapped B-splines in ``backend='eilers'``
+   (:mod:`magli.eilers`).  Periodic smooths (``constraint='periodic'``) are
+   supported in both engines, using wrapped B-splines in :mod:`magli.eilers`
    and via cyclic cubic/P-spline bases (``bs='cc'`` / ``bs='cp'``) in
-   ``backend='wood'``.
+   :mod:`magli.wood`.
 
 Available constraints
 ---------------------
@@ -131,15 +131,15 @@ Monotonically increasing spline:
 
 .. code-block:: python
 
-   model = GAMCore("s(0, constraint='mono_inc') + l(1)", backend="eilers")
+   model = GAMCore("s(0, constraint='mono_inc') + l(1)")
    model.fit(x, y)
 
 Periodic seasonal effect::
 
-   model = GAMCore("s(0, n_splines=12, constraint='periodic') + l(1)", backend="eilers")
+   model = GAMCore("s(0, n_splines=12, constraint='periodic') + l(1)")
    model.fit(x, y)
 
 Single-term with monotonicity::
 
-   model = LinGAM(n_splines=12, constraint='mono_inc', backend="eilers")
+   model = LinGAM(n_splines=12, constraint='mono_inc')
    model.fit(x, y)

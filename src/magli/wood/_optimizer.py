@@ -269,6 +269,7 @@ def fit_wood_engine(
                 + 0.5 * df_reml * np.log(2.0 * np.pi * scale_est)
                 + 0.5 * log_det_H
                 - 0.5 * log_det_S
+                - 0.5 * log_w_sum
             )
             if compute_grad and H_inv is not None and grad is not None:
                 for k_i, idx in enumerate(free_indices):
@@ -391,7 +392,7 @@ def fit_wood_engine(
             bounds=[(-15.0, 25.0)] * n_free,
             options={"ftol": 1e-14, "gtol": 1e-10},
         )
-        if np.any(opt.x <= -14.9):
+        if np.any(opt.x <= -14.9) or np.any(opt.x >= 20.0):
             candidates = [np.full(n_free, v) for v in (-8.0, -4.0, 0.0, 4.0, 8.0)]
             r_grid = min(candidates, key=lambda r: _eval_criterion(r)[0])
             opt2 = optimize.minimize(
@@ -411,7 +412,11 @@ def fit_wood_engine(
         for i, idx in enumerate(free_indices):
             best_sp[idx] = float(np.exp(opt.x[i]))
 
-    scale_val = best_scale
+    scale_val = (
+        best_rss / max(n - best_edf, 1.0)
+        if len(free_indices) < n_pens
+        else best_scale
+    )
     Vp = best_H_inv * scale_val
     H_inv_RtR = best_H_inv @ RtR
     Ve = (H_inv_RtR @ best_H_inv) * scale_val

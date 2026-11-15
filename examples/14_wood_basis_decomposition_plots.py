@@ -17,7 +17,8 @@ non-linear relationship (y vs x):
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import LinGAM
+from magli.eilers import LinGAM as EilersLinGAM
+from magli.wood import LinGAM as WoodLinGAM
 
 np.random.seed(42)
 
@@ -36,7 +37,7 @@ y = y_true + np.random.normal(0, sigma, n)
 # ── 2. Fit Wood LinGAM with Automatic REML ─────────────────────────────────────
 # Uses cubic regression splines (bs="cr") with k=10 basis functions.
 # The smoothing parameter (sp / lam) is automatically selected via REML.
-model = LinGAM(k=10, bs="cr", backend="wood")
+model = WoodLinGAM(k=10, bs="cr")
 model.fit(x, y)
 
 print("=" * 65)
@@ -157,7 +158,7 @@ sp_cases = [
 ]
 
 for idx, (sp_val, title) in enumerate(sp_cases):
-    m_case = LinGAM(k=10, bs="cr", sp=sp_val, backend="wood")
+    m_case = WoodLinGAM(k=10, bs="cr", sp=sp_val)
     m_case.fit(x, y)
     y_case = m_case.predict(x_grid)
     
@@ -192,7 +193,7 @@ basis_types = [
 ]
 
 for col_idx, (bs_type, bs_name) in enumerate(basis_types):
-    m_bs = LinGAM(k=10, bs=bs_type, backend="wood")
+    m_bs = WoodLinGAM(k=10, bs=bs_type)
     m_bs.fit(x, y)
     
     X_bs = m_bs._build_model_matrix(x_grid.reshape(-1, 1))
@@ -233,7 +234,7 @@ plt.show()
 # ── 9. Backend Comparison: Wood vs Eilers-Marx ────────────────────────────────
 # Compare the Wood backend (automatic REML) against the Eilers-Marx backend
 # (B-splines + GCV grid search) on the same dataset.
-em_model = LinGAM(backend="eilers")
+em_model = EilersLinGAM()
 em_model.gridsearch(x, y)
 
 print("\n" + "=" * 65)

@@ -64,7 +64,7 @@ class LinGAM(GAMCore):
             raise ValueError(
                 f"Unsupported constraint '{constraint}' for Wood backend. "
                 "Wood backend natively supports 'periodic' (bs='cc'). For soft shape "
-                "constraints (monotonicity, convexity), use backend='eilers'."
+                "constraints (monotonicity, convexity), use magli.eilers.LinGAM."
             )
 
         if n_splines < 3:
@@ -255,6 +255,7 @@ class LinGAM(GAMCore):
         crit_key = "GCV" if len(k_list) > 1 else "score"
         best_score = np.inf
         best_cand: Optional[LinGAM] = None
+        last_err: Optional[Exception] = None
 
         for k_cand in k_list:
             for l_cand in lam_list:
@@ -271,7 +272,8 @@ class LinGAM(GAMCore):
                     if cand.statistics_[crit_key] < best_score:
                         best_score = cand.statistics_[crit_key]
                         best_cand = cand
-                except Exception:
+                except (ValueError, np.linalg.LinAlgError) as exc:
+                    last_err = exc
                     continue
 
         if best_cand is not None:
@@ -285,7 +287,7 @@ class LinGAM(GAMCore):
             self.knots_ = best_cand.knots_
             return self
 
-        return self.fit(x_arr, y_arr, weights=w_arr)
+        raise ValueError(f"All gridsearch candidates failed; last error: {last_err}") from last_err
 
     def plot_decomposition(
         self,

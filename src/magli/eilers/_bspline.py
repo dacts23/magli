@@ -51,7 +51,7 @@ def b_spline_basis(
     boundary_knots = np.linspace(0.0, 1.0, 1 + K - k)
     diff = boundary_knots[1] - boundary_knots[0]
 
-    x = (np.asarray(x_in).ravel() - offset) / scale
+    x = (np.asarray(x_in, dtype=float).ravel() - offset) / scale
     x = np.r_[x, 0.0, 1.0]
 
     if periodic:

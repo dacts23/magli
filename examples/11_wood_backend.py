@@ -12,7 +12,8 @@ Demonstrates magli's native Wood (2011) backend:
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import LinGAM, GAMCore
+from magli.eilers import GAMCore as EilersGAMCore, LinGAM as EilersLinGAM
+from magli.wood import GAMCore as WoodGAMCore, LinGAM as WoodLinGAM
 
 np.random.seed(42)
 
@@ -26,7 +27,7 @@ x = np.linspace(0, 1, n)
 y = np.sin(2 * np.pi * x) + np.random.normal(0, 0.15, n)
 
 # In Wood backend, lambda (sp) is estimated automatically during fit via REML
-model = LinGAM(k=10, bs="cr", backend="wood")
+model = WoodLinGAM(k=10, bs="cr")
 model.fit(x, y)
 
 # Print full summary table
@@ -50,7 +51,7 @@ print("=" * 60)
 
 bases = ["tp", "cr", "ps", "cc"]
 for b in bases:
-    m = LinGAM(k=10, bs=b, backend="wood")
+    m = WoodLinGAM(k=10, bs=b)
     m.fit(x, y)
     print(f"Basis bs='{b:2s}':  EDF = {m.statistics_['edof']:5.2f}  |  REML = {m.statistics_['score']:8.3f}  |  sp = {m.lam:8.4f}")
 
@@ -65,7 +66,7 @@ x2 = np.random.uniform(0, 1, n)
 X = np.column_stack([x0, x1, x2])
 y_multi = np.sin(np.pi * x0) * np.cos(np.pi * x1) + 2.5 * x2 + np.random.normal(0, 0.1, n)
 
-gam = GAMCore("te(0, 1, bs='cr', k=4) + l(2)", backend="wood")
+gam = WoodGAMCore("te(0, 1, bs='cr', k=4) + l(2)")
 gam.fit(X, y_multi)
 
 print(gam.summary())
@@ -79,7 +80,7 @@ print("\n" + "=" * 60)
 print("Backend comparison: Wood (above) vs Eilers-Marx (below, same data)")
 print("=" * 60)
 
-em_model = LinGAM(backend="eilers")
+em_model = EilersLinGAM()
 em_model.gridsearch(x, y)
 print("\n--- Single-term: Eilers-Marx (B-splines + GCV grid search) ---")
 print(f"{'Metric':<22}{'Eilers-Marx':>12}{'Wood':>12}")
@@ -88,7 +89,7 @@ print(f"{'EDF':<22}{em_model.statistics_['edof']:>12.2f}{model.statistics_['edof
 print(f"{'RSS':<22}{em_model.statistics_['rss']:>12.4f}{model.statistics_['rss']:>12.4f}")
 print(f"{'R^2':<22}{em_model.deviance_explained():>12.4f}{model.deviance_explained():>12.4f}")
 
-em_gam = GAMCore("te(0, 1, n_splines=4) + l(2)", backend="eilers")
+em_gam = EilersGAMCore("te(0, 1, n_splines=4) + l(2)")
 em_gam.gridsearch(X, y_multi)
 print("\n--- Multi-term te(0, 1) + l(2): Eilers-Marx vs Wood ---")
 print(f"{'Metric':<22}{'Eilers-Marx':>12}{'Wood':>12}")

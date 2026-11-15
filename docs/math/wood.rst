@@ -18,7 +18,7 @@ Part III — The Wood Backend
 How the Wood backend thinks
 ---------------------------
 
-The Wood backend (``backend='wood'``) is a pure Python implementation of Simon
+The Wood backend (:mod:`magli.wood`) is a pure Python implementation of Simon
 Wood's GAM framework (Wood 2006, 2011, 2017).  Where the Eilers-Marx backend bets
 on one basis and a grid search, Wood bets on **richness and automatic
 inference**:

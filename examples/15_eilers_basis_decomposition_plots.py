@@ -18,7 +18,8 @@ on a 1D non-linear relationship (y vs x):
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import LinGAM
+from magli.eilers import LinGAM as EilersLinGAM
+from magli.wood import LinGAM as WoodLinGAM
 
 np.random.seed(42)
 
@@ -36,7 +37,7 @@ y = y_true + np.random.normal(0, sigma, n)
 # ── 2. Fit Eilers-Marx LinGAM with GCV Grid Search ────────────────────────────
 # Uses uniform B-splines with second-difference penalty (Eilers & Marx 1996).
 # The smoothing parameter (lam) is selected by GCV grid search.
-model = LinGAM(n_splines=10, backend="eilers")
+model = EilersLinGAM(n_splines=10)
 model.gridsearch(x, y)
 
 print("=" * 65)
@@ -162,7 +163,7 @@ lam_cases = [
 ]
 
 for idx, (lam_val, title) in enumerate(lam_cases):
-    m_case = LinGAM(n_splines=10, lam=lam_val, backend="eilers")
+    m_case = EilersLinGAM(n_splines=10, lam=lam_val)
     m_case.fit(x, y)
     y_case = m_case.predict(x_grid)
     
@@ -201,7 +202,7 @@ constraints = [
 ]
 
 for idx, (cons, name, col) in enumerate(constraints):
-    m_cons = LinGAM(n_splines=12, constraint=cons, backend="eilers")
+    m_cons = EilersLinGAM(n_splines=12, constraint=cons)
     m_cons.fit(x, y)
     ax = axes5[idx]
     ax.scatter(x, y, c="gray", alpha=0.3, s=10)
@@ -221,7 +222,7 @@ plt.show()
 # Direct visual comparison addressing why B-splines look uniform while Wood bases look wavy:
 # - Eilers-Marx: raw B-splines are localized, uniform positive bumps (sum_j B_j(x) = 1)
 # - Wood: QR null-space projection (Z matrix) absorbs sum-to-zero, forcing wavy zero-mean modes
-wood_model = LinGAM(k=10, bs="ps", backend="wood")
+wood_model = WoodLinGAM(k=10, bs="ps")
 wood_model.fit(x, y)
 
 X_em = model._build_model_matrix(x_grid.reshape(-1, 1))[:, :model.n_coefs]

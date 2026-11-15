@@ -116,7 +116,7 @@ class _TensorTerm(_Term):
 
     __slots__ = (
         'features', 'd', 'n_splines_per', 'lam_per', 'lam',
-        'spline_order', '_edge_knots', 'n_coefs',
+        'spline_order', 'spline_order_per', '_edge_knots', 'n_coefs',
     )
 
     def __init__(
@@ -124,14 +124,24 @@ class _TensorTerm(_Term):
         features: List[int],
         n_splines: Union[int, List[int]] = 5,
         lam: Union[float, List[float]] = 1.0,
-        spline_order: int = 3,
+        spline_order: Union[int, List[int]] = 3,
     ) -> None:
-        if spline_order < 1:
-            raise ValueError("spline_order must be >= 1.")
         self.features = [int(f) for f in features]
         self.d = len(self.features)
         if self.d < 2:
             raise ValueError("Tensor term requires at least 2 features.")
+
+        if isinstance(spline_order, (int, np.integer)):
+            self.spline_order_per = [int(spline_order)] * self.d
+        elif len(spline_order) != self.d:
+            raise ValueError(
+                f"spline_order length ({len(spline_order)}) must match "
+                f"number of features ({self.d})."
+            )
+        else:
+            self.spline_order_per = [int(v) for v in spline_order]
+        if any(o < 1 for o in self.spline_order_per):
+            raise ValueError("spline_order must be >= 1.")
 
         if isinstance(n_splines, (int, np.integer)):
             self.n_splines_per = [int(n_splines)] * self.d
@@ -143,9 +153,9 @@ class _TensorTerm(_Term):
         else:
             self.n_splines_per = [int(v) for v in n_splines]
 
-        if any(k <= spline_order for k in self.n_splines_per):
+        if any(k <= o for k, o in zip(self.n_splines_per, self.spline_order_per)):
             raise ValueError(
-                f"n_splines ({self.n_splines_per}) must be greater than spline_order ({spline_order})."
+                f"n_splines ({self.n_splines_per}) must be greater than spline_order ({self.spline_order_per})."
             )
 
         if isinstance(lam, (int, float, np.number)):
@@ -162,24 +172,26 @@ class _TensorTerm(_Term):
             raise ValueError("Smoothing parameter 'lam' must be non-negative.")
 
         self.lam = self.lam_per[0]
-        self.spline_order = spline_order
+        self.spline_order = self.spline_order_per[0]
         self.n_coefs = int(np.prod(self.n_splines_per))
         self._edge_knots: List[np.ndarray] = []
 
     def compile(self, x: np.ndarray) -> None:
+        cols = np.asarray(x[:, self.features], dtype=float)
         self._edge_knots = [
-            np.array([np.min(x[:, f]), np.max(x[:, f])]) for f in self.features
+            np.array([cols[:, i].min(), cols[:, i].max()]) for i in range(self.d)
         ]
 
     def build_columns(self, x: np.ndarray) -> np.ndarray:
+        cols = np.asarray(x[:, self.features], dtype=float)
         return _khatri_rao([
             b_spline_basis(
-                x[:, feat],
+                cols[:, i],
                 self.n_splines_per[i],
-                self.spline_order,
+                self.spline_order_per[i],
                 self._edge_knots[i],
             )
-            for i, feat in enumerate(self.features)
+            for i in range(self.d)
         ])
 
     def build_penalty(self, lam: Optional[List[float]] = None) -> np.ndarray:
@@ -315,7 +327,7 @@ def instantiate_terms(
                 lam_val if lam_val is not None else 0.0,
             ))
         elif t == 'ti':
-            raise ValueError("ti() is only supported by the 'wood' backend.")
+            raise ValueError("ti() is only supported by magli.wood.GAMCore.")
         else:
             raise ValueError(f"Unknown term type: {t}")
 

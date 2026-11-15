@@ -19,7 +19,7 @@ Part II — The Eilers & Marx Backend
 How the Eilers-Marx backend thinks
 ----------------------------------
 
-The Eilers-Marx backend (``backend='eilers'``) is the minimalist design, relying on **one
+The Eilers-Marx backend (:mod:`magli.eilers`) is the minimalist design, relying on **one
 basis family, one solver, one criterion, chosen well.**  Every smooth term
 is a uniform cubic B-spline; smoothness is charged by a difference penalty;
 the one free knob, the smoothing parameter :math:`\lambda`, is chosen by

@@ -65,7 +65,10 @@ class GAMCore(_GAMBase):
         configs = parse_formula(formula)
         self._term_configs = configs
         self._terms: List[_WoodTerm] = instantiate_wood_terms(
-            configs, select=self.select, fit_intercept=self.fit_intercept
+            configs,
+            select=self.select,
+            fit_intercept=self.fit_intercept,
+            spline_order=self.spline_order,
         )
 
         self._coef_slices: List[Tuple[int, int]] = []
@@ -252,6 +255,7 @@ class GAMCore(_GAMBase):
 
         best_gcv = np.inf
         best_model: Optional[GAMCore] = None
+        last_err: Optional[Exception] = None
 
         for combo in cartesian_product(*grids):
             configs_copy = [dict(cfg) for cfg in self._term_configs]
@@ -269,16 +273,20 @@ class GAMCore(_GAMBase):
                 spline_order=self.spline_order,
                 select=self.select,
             )
-            cand_model._terms = instantiate_wood_terms(
-                configs_copy, select=self.select, fit_intercept=self.fit_intercept
-            )
-            cand_model._term_configs = configs_copy
             try:
+                cand_model._terms = instantiate_wood_terms(
+                    configs_copy,
+                    select=self.select,
+                    fit_intercept=self.fit_intercept,
+                    spline_order=self.spline_order,
+                )
+                cand_model._term_configs = configs_copy
                 cand_model.fit(x_arr, y_arr, weights=w_arr)
                 if cand_model.statistics_["GCV"] < best_gcv:
                     best_gcv = cand_model.statistics_["GCV"]
                     best_model = cand_model
-            except Exception:
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                last_err = exc
                 continue
 
         if best_model is not None:
@@ -290,7 +298,7 @@ class GAMCore(_GAMBase):
             self._design_matrix_ = best_model._design_matrix_
             return self
 
-        return self.fit(x_arr, y_arr, weights=w_arr)
+        raise ValueError(f"All gridsearch candidates failed; last error: {last_err}") from last_err
 
     def plot_decomposition(
         self,

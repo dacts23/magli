@@ -25,7 +25,8 @@ Close each plot window to advance to the next section.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import GAMCore
+from magli.eilers import GAMCore as EilersGAMCore
+from magli.wood import GAMCore as WoodGAMCore
 
 # ------------------------------------------------------------------
 # 1. Generate synthetic engineering data (ground truth known)
@@ -122,7 +123,7 @@ formula = (
     " + l(3)"
 )
 
-model = GAMCore(formula, spline_order=3, fit_intercept=True, backend="eilers")
+model = EilersGAMCore(formula, spline_order=3, fit_intercept=True)
 model.fit(x, y)
 
 print("=" * 72)
@@ -204,7 +205,7 @@ print()
 # ------------------------------------------------------------------
 weights = np.ones(n)
 weights[outlier_idx] = 1e-4
-model_robust = GAMCore(formula, backend="eilers")
+model_robust = EilersGAMCore(formula)
 model_robust.fit(x, y, weights=weights)
 
 print("=" * 72)
@@ -230,7 +231,7 @@ formula_unconstrained = (
     " + f(4, coding='dummy')"
     " + l(3)"
 )
-model_unc = GAMCore(formula_unconstrained, backend="eilers")
+model_unc = EilersGAMCore(formula_unconstrained)
 model_unc.fit(x, y)
 
 print("=" * 72)
@@ -423,7 +424,7 @@ plt.show()
 # backends: Eilers-Marx with its GCV-tuned fit from Section 5, Wood with
 # automatic REML smoothing in a single fit. Conversely, the R-style summary()
 # table with F-tests/p-values and bs basis choices are Wood-only (see 11_wood_backend.py).
-wood_unc = GAMCore(formula_unconstrained, backend="wood")
+wood_unc = WoodGAMCore(formula_unconstrained)
 wood_unc.fit(x, y)
 print("=" * 72)
 print("SECTION 11 -- BACKEND COMPARISON (unconstrained formula, both backends)")

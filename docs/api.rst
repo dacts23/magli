@@ -12,34 +12,18 @@ examples for all public classes, methods, formula terms, and backend engines.
    :depth: 2
 
 
-Unified Dispatch API
---------------------
-
-The top-level :class:`GAM` (aliased as :class:`LinGAM`) and :class:`GAMCore` classes provide
-a unified entrypoint that dynamically dispatches to either the Wood (``backend='wood'``, default)
-or Eilers-Marx (``backend='eilers'``) engine.
-
-Backend-specific classes are also directly importable from :mod:`magli` as
-``WoodLinGAM``, ``WoodGAMCore``, ``EilersLinGAM``, and ``EilersGAMCore``.
-
-.. autosummary::
-   :toctree: generated/
-   :nosignatures:
-
-   LinGAM
-   GAMCore
-
-
 Backend Engines Compared
-^^^^^^^^^^^^^^^^^^^^^^^^
+------------------------
+
+Choose an engine explicitly by importing from :mod:`magli.wood` or :mod:`magli.eilers`.
 
 .. list-table::
    :header-rows: 1
    :widths: 22 39 39
 
    * - Feature / Aspect
-     - Wood Backend (``backend='wood'``)
-     - Eilers-Marx Backend (``backend='eilers'``)
+     - :mod:`magli.wood`
+     - :mod:`magli.eilers`
    * - **Primary Paradigm**
      - Penalized Regression Splines (Wood 2011, 2017)
      - P-splines with Difference Penalties (Eilers & Marx 1996)
@@ -68,8 +52,8 @@ using concise expressions joined by ``+``:
 
 .. code-block:: python
 
-    import magli as mg
-    model = mg.GAMCore("s(0, k=12, bs='cr') + te(1, 2) + l(3) + f(4)")
+    from magli.wood import GAMCore
+    model = GAMCore("s(0, k=12, bs='cr') + te(1, 2) + l(3) + f(4)")
 
 Term Constructors
 ^^^^^^^^^^^^^^^^^

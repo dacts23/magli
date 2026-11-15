@@ -8,7 +8,8 @@ between two predictors that univariate splines cannot represent.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import GAMCore
+from magli.eilers import GAMCore as EilersGAMCore
+from magli.wood import GAMCore as WoodGAMCore
 
 np.random.seed(42)
 n = 600
@@ -23,11 +24,11 @@ y = (
 )
 
 # Additive model (no interaction)
-model_add = GAMCore("s(0) + s(1)", backend="eilers")
+model_add = EilersGAMCore("s(0) + s(1)")
 model_add.fit(x, y)
 
 # Tensor interaction model
-model_te = GAMCore("s(0) + s(1) + te(0, 1, n_splines=6)", backend="eilers")
+model_te = EilersGAMCore("s(0) + s(1) + te(0, 1, n_splines=6)")
 model_te.fit(x, y)
 model_te.gridsearch(x, y, search_terms=["s"],lam_grids=[np.logspace(-3, 3, 7),np.logspace(-3, 3, 7)],n_splines_grids=[np.arange(4, 10), np.arange(4, 10)])
 
@@ -53,7 +54,7 @@ plt.show()
 # Same tensor formula on both backends: Eilers-Marx uses B-splines with the GCV-tuned
 # penalties from the grid search above; Wood builds a tensor product of cubic
 # regression splines with one REML-estimated smoothing parameter per margin.
-wood_te = GAMCore("s(0) + s(1) + te(0, 1, n_splines=6)", backend="wood")
+wood_te = WoodGAMCore("s(0) + s(1) + te(0, 1, n_splines=6)")
 wood_te.fit(x, y)
 print("\n--- Backend comparison: tensor interaction on both backends ---")
 print(f"{'Metric':<18}{'Eilers-Marx':>12}{'Wood':>12}")

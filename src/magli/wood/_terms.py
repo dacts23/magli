@@ -16,6 +16,19 @@ from ._smooths import (
 )
 
 
+def _append_select_null_penalty(penalties: List[np.ndarray]) -> None:
+    """Append R mgcv's null-space penalty H = U_0 U_0^T for select=True."""
+    if not penalties:
+        return
+    S_sum = sum(penalties)
+    ev, evec = np.linalg.eigh(S_sum)
+    null_mask = ev <= 1e-10 * max(float(ev[-1]), 1e-12)
+    if np.any(null_mask):
+        U0 = evec[:, null_mask]
+        H = U0 @ U0.T
+        penalties.append(0.5 * (H + H.T))
+
+
 class _WoodSplineTerm(_WoodTerm):
     """Univariate smooth term s(x, bs='tp', k=10)."""
 
@@ -43,7 +56,7 @@ class _WoodSplineTerm(_WoodTerm):
             raise ValueError(
                 f"Unsupported constraint '{constraint}' for Wood backend. "
                 "Wood backend natively supports 'periodic' (bs='cc'). For soft shape "
-                "constraints (monotonicity, convexity), use backend='eilers'."
+                "constraints (monotonicity, convexity), use magli.eilers.GAMCore."
             )
         if constraint == "periodic" and self.bs not in ("cc", "cp"):
             self.bs = "cc"
@@ -99,13 +112,8 @@ class _WoodSplineTerm(_WoodTerm):
             X_abs, self._penalties, self._Z = absorb_sum_to_zero_constraint(
                 X_raw, S_scaled
             )
-        if self.select and len(self._penalties) == 1:
-            es_val, es_vec = np.linalg.eigh(self._penalties[0])
-            pos = es_val > es_val[-1] * 1e-10
-            if np.any(pos) and not np.all(pos):
-                es_val[~pos] = float(np.min(es_val[pos])) * 0.1
-                S_sh = es_vec @ (es_val[:, None] * es_vec.T)
-                self._penalties = [0.5 * (S_sh + S_sh.T)]
+        if self.select:
+            _append_select_null_penalty(self._penalties)
         self.n_coefs = X_abs.shape[1]
         self._cached_cols = self._extract_cols(x)
         self._cached_X = X_abs
@@ -148,9 +156,11 @@ class _WoodTensorTerm(_WoodTerm):
         knots: Optional[Union[np.ndarray, List[Any]]] = None,
         interaction: bool = False,
         by: Optional[int] = None,
+        select: bool = False,
         absorb_cons: bool = True,
     ) -> None:
         self.interaction = interaction
+        self.select = bool(select)
         self.absorb_cons = bool(absorb_cons)
         self.kind = "ti" if interaction else "te"
         self.features = [int(f) for f in features]
@@ -220,12 +230,14 @@ class _WoodTensorTerm(_WoodTerm):
         self._penalties: List[np.ndarray] = []
         self._marginal_meta: List[Dict] = []
         self._marginal_Z: List[np.ndarray] = []
+        self._marginal_Xp_inv: List[Optional[np.ndarray]] = []
         self._cached_cols: Optional[np.ndarray] = None
         self._cached_X: Optional[np.ndarray] = None
         self.n_coefs = 0
 
     def compile(self, x: np.ndarray) -> None:
-        marg_X, marg_S, self._marginal_meta, self._marginal_Z = [], [], [], []
+        marg_X, marg_S = [], []
+        self._marginal_meta, self._marginal_Z, self._marginal_Xp_inv = [], [], []
         cols = np.asarray(x[:, self.features], dtype=float)
         for i in range(self.d):
             col = cols[:, i].ravel()
@@ -236,12 +248,28 @@ class _WoodTensorTerm(_WoodTerm):
                 m=self.m_per[i],
                 knots=self.knots_per[i],
             )
+            Zi = None
+            if self.interaction:  # mgcv ti(): absorb marginal constraint before np=TRUE reparameterization
+                Xi, Si, Zi = absorb_sum_to_zero_constraint(Xi, Si)
+                self._marginal_Z.append(Zi)
+            if self.bs_per[i] not in ("cr", "cs", "cc"):  # cr/cs/cc set noterp=TRUE in mgcv
+                x_p = np.linspace(float(col.min()), float(col.max()), Xi.shape[1])
+                X_p = predict_smooth_basis(x_p, meta_i)
+                if Zi is not None:
+                    X_p = X_p @ Zi
+                if np.linalg.cond(X_p) < 1e10:  # mgcv np=TRUE marginal reparameterization
+                    Xp_inv = np.linalg.inv(X_p)
+                    Xi = Xi @ Xp_inv
+                    S_0 = Xp_inv.T @ Si[0] @ Xp_inv
+                    Si = [0.5 * (S_0 + S_0.T)]
+                    self._marginal_Xp_inv.append(Xp_inv)
+                else:
+                    self._marginal_Xp_inv.append(None)
+            else:
+                self._marginal_Xp_inv.append(None)
             ev_max = np.linalg.eigvalsh(Si[0])[-1]
             if ev_max > 0:
                 Si[0] = Si[0] / ev_max
-            if self.interaction:  # mgcv ti(): centre each margin so main effects are excluded
-                Xi, Si, Zi = absorb_sum_to_zero_constraint(Xi, Si)
-                self._marginal_Z.append(Zi)
             marg_X.append(Xi)
             marg_S.append(Si[0])
             self._marginal_meta.append(meta_i)
@@ -267,6 +295,8 @@ class _WoodTensorTerm(_WoodTerm):
             X_abs, self._penalties, self._Z = absorb_sum_to_zero_constraint(
                 X_te, S_scaled
             )
+        if self.select:
+            _append_select_null_penalty(self._penalties)
         self.n_coefs = X_abs.shape[1]
         self._cached_cols = np.asarray(x[:, self.features + ([self.by] if self.by is not None else [])], dtype=float)
         self._cached_X = X_abs
@@ -288,6 +318,10 @@ class _WoodTensorTerm(_WoodTerm):
         ]
         if self.interaction:
             marg_X = [B @ Z for B, Z in zip(marg_X, self._marginal_Z)]
+        marg_X = [
+            B @ Xp_inv if Xp_inv is not None else B
+            for B, Xp_inv in zip(marg_X, self._marginal_Xp_inv)
+        ]
         res = _khatri_rao(marg_X) @ self._Z
         if self.by is not None:
             by_col = np.asarray(x[:, self.by], dtype=float).ravel()
@@ -308,12 +342,25 @@ class _WoodFactorTerm(_FactorTerm):
 _WoodLinearTerm = _LinearTerm
 
 
+def _default_spline_m_1d(bs_val: str, spline_order: int) -> Optional[Tuple[int, int]]:
+    bs_lower = str(bs_val).lower()
+    if bs_lower in ("bs", "b"):
+        return (int(spline_order), 2)
+    if bs_lower in ("ps", "cp"):
+        return (int(spline_order) - 1, 2)
+    return None
+
+
 def instantiate_wood_terms(
-    configs: List[Dict[str, Any]], select: bool = False, fit_intercept: bool = True
+    configs: List[Dict[str, Any]],
+    select: bool = False,
+    fit_intercept: bool = True,
+    spline_order: int = 3,
 ) -> List[_WoodTerm]:
     """Instantiate Wood term objects from parsed formula config dicts."""
     terms: List[_WoodTerm] = []
     has_dropped_cons = fit_intercept
+    spline_order = int(spline_order)
     for cfg in configs:
         kind = cfg["type"]
         feats = cfg["features"]
@@ -326,24 +373,21 @@ def instantiate_wood_terms(
         bs_val = kw.pop("bs", default_bs)
         by_val = kw.pop("by", None)
 
-        if select:
-            if isinstance(bs_val, str):
-                bs_val = "ts" if bs_val == "tp" else ("cs" if bs_val == "cr" else bs_val)
-            elif isinstance(bs_val, (list, tuple)):
-                bs_val = ["ts" if b == "tp" else ("cs" if b == "cr" else b) for b in bs_val]
-
         if kind == "s":
             absorb = True
             if not has_dropped_cons and by_val is None and bs_val != "re":
                 absorb = False
                 has_dropped_cons = True
+            m_val = kw.pop("m", None)
+            if m_val is None and spline_order != 3:
+                m_val = _default_spline_m_1d(bs_val, spline_order)
             terms.append(
                 _WoodSplineTerm(
                     feature=feats[0],
                     k=k_val,
                     bs=bs_val,
                     sp=sp_val,
-                    m=kw.pop("m", None),
+                    m=m_val,
                     knots=kw.pop("knots", None),
                     constraint=kw.pop("constraint", None),
                     by=by_val,
@@ -356,16 +400,23 @@ def instantiate_wood_terms(
             if not has_dropped_cons and kind == "te" and by_val is None:
                 absorb = False
                 has_dropped_cons = True
+            m_val = kw.pop("m", None)
+            if m_val is None and spline_order != 3:
+                bs_per = [bs_val] * len(feats) if isinstance(bs_val, str) else list(bs_val)
+                m_list = [_default_spline_m_1d(b, spline_order) for b in bs_per]
+                if any(v is not None for v in m_list):
+                    m_val = tuple(m_list)
             terms.append(
                 _WoodTensorTerm(
                     features=feats,
                     k=k_val,
                     bs=bs_val,
                     sp=sp_val,
-                    m=kw.pop("m", None),
+                    m=m_val,
                     knots=kw.pop("knots", None),
                     interaction=kind == "ti",
                     by=by_val,
+                    select=select,
                     absorb_cons=absorb,
                 )
             )

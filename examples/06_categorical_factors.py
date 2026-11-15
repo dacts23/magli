@@ -7,7 +7,8 @@ Include a categorical variable with a factor term ``f()``.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import GAMCore
+from magli.eilers import GAMCore as EilersGAMCore
+from magli.wood import GAMCore as WoodGAMCore
 
 np.random.seed(42)
 n = 500
@@ -22,7 +23,7 @@ y = (
     + np.random.normal(0, 0.25, n)
 )
 
-model = GAMCore("s(0) + f(1)", backend="eilers")
+model = EilersGAMCore("s(0) + f(1)")
 model.fit(x, y)
 model.gridsearch(x, y)
 
@@ -49,7 +50,7 @@ plt.show()
 # Same s() + f() formula on both backends. Note the defaults differ: Eilers-Marx
 # one-hot encodes f() with a ridge penalty, Wood dummy-encodes it as an
 # unpenalised parametric factor  -  same fit, different parametrisation.
-wood_model = GAMCore("s(0) + f(1)", backend="wood")
+wood_model = WoodGAMCore("s(0) + f(1)")
 wood_model.fit(x, y)
 print("\n--- Backend comparison: Eilers-Marx (GCV grid search) vs Wood (REML) ---")
 print(f"{'Metric':<18}{'Eilers-Marx':>12}{'Wood':>12}")

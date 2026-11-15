@@ -19,7 +19,8 @@ import time
 import numpy as np
 import matplotlib.pyplot as plt
 
-from magli import LinGAM, GAMCore
+from magli.eilers import GAMCore as EilersGAMCore, LinGAM as EilersLinGAM
+from magli.wood import GAMCore as WoodGAMCore, LinGAM as WoodLinGAM
 
 def run_comparison():
     print("=" * 78)
@@ -47,7 +48,7 @@ def run_comparison():
 
     # 1. Eilers-Marx engine (B-spline + GCV gridsearch)
     t0 = time.perf_counter()
-    m_em = LinGAM(n_splines=12, backend="eilers")
+    m_em = EilersLinGAM(n_splines=12)
     m_em.gridsearch(x, y, lam=np.logspace(-3, 3, 25))
     t_em = (time.perf_counter() - t0) * 1000
 
@@ -56,7 +57,7 @@ def run_comparison():
 
     # 2. Wood engine (Cubic splines + REML auto-optimization)
     t0 = time.perf_counter()
-    m_wd = LinGAM(k=12, bs="cr", backend="wood")
+    m_wd = WoodLinGAM(k=12, bs="cr")
     m_wd.fit(x, y)
     t_wd = (time.perf_counter() - t0) * 1000
 
@@ -98,13 +99,13 @@ def run_comparison():
 
     # 1. Eilers-Marx multivariate (B-splines + 2D Cartesian GCV gridsearch: 9x9 = 81 models)
     t0 = time.perf_counter()
-    g_em = GAMCore(formula, backend="eilers")
+    g_em = EilersGAMCore(formula)
     g_em.gridsearch(X, y_multi, lam=[np.logspace(-2, 2, 9), np.logspace(-2, 2, 9)])
     t_em_multi = (time.perf_counter() - t0) * 1000
 
     # 2. Wood multivariate (Cubic splines + REML auto-optimization)
     t0 = time.perf_counter()
-    g_wd = GAMCore(formula, backend="wood")
+    g_wd = WoodGAMCore(formula)
     g_wd.fit(X, y_multi)
     t_wd_multi = (time.perf_counter() - t0) * 1000
 

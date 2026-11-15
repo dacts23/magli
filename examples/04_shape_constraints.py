@@ -8,7 +8,8 @@ monotonic increasing, monotonic decreasing, convex, concave, and periodic.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import LinGAM
+from magli.eilers import LinGAM as EilersLinGAM
+from magli.wood import LinGAM as WoodLinGAM
 
 np.random.seed(42)
 
@@ -16,29 +17,29 @@ np.random.seed(42)
 dose = np.random.uniform(0, 10, 200)
 response = 5 * (1 - np.exp(-0.4 * dose)) + np.random.normal(0, 0.3, 200)
 
-model_inc = LinGAM(n_splines=12, constraint='mono_inc', backend="eilers")
+model_inc = EilersLinGAM(n_splines=12, constraint='mono_inc')
 model_inc.fit(dose, response)
 
 # 2. Monotonic decreasing (diminishing returns)
-model_dec = LinGAM(n_splines=12, constraint='mono_dec', backend="eilers")
+model_dec = EilersLinGAM(n_splines=12, constraint='mono_dec')
 model_dec.fit(dose, 10 - response + np.random.normal(0, 0.3, 200))
 
 # 3. Periodic (seasonal cycle)
 hour = np.random.uniform(0, 24, 300)
 temp = 20 + 8 * np.sin(2 * np.pi * hour / 24) + np.random.normal(0, 1, 300)
 
-model_per = LinGAM(n_splines=14, constraint='periodic', backend="eilers")
+model_per = EilersLinGAM(n_splines=14, constraint='periodic')
 model_per.fit(hour, temp)
 
 # 4. Convex (U-shaped)
 x_cv = np.random.uniform(-3, 3, 250)
 y_cv = 0.5 * x_cv**2 + np.random.normal(0, 0.3, 250)
 
-model_cvx = LinGAM(n_splines=12, constraint='convex', backend="eilers")
+model_cvx = EilersLinGAM(n_splines=12, constraint='convex')
 model_cvx.fit(x_cv, y_cv)
 
 # 5. Concave (inverted U)
-model_ccv = LinGAM(n_splines=12, constraint='concave', backend="eilers")
+model_ccv = EilersLinGAM(n_splines=12, constraint='concave')
 model_ccv.fit(x_cv, -0.5 * x_cv**2 + np.random.normal(0, 0.3, 250))
 
 print("=== Shape Constraints ===")
@@ -85,7 +86,7 @@ plt.show()
 # feature; the Wood backend natively supports only the periodic constraint
 # (cyclic cubic splines, bs='cc'). So only the seasonal model has a Wood
 # counterpart  -  it should match the Eilers-Marx periodic fit up to basis differences.
-wood_per = LinGAM(k=14, bs="cc", backend="wood")
+wood_per = WoodLinGAM(k=14, bs="cc")
 wood_per.fit(hour, temp)
 print("\n--- Backend comparison: periodic fit on both backends ---")
 print(f"{'Metric':<18}{'Eilers-Marx periodic':>22}{'Wood (cc)':>12}")

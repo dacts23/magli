@@ -9,12 +9,6 @@ def second_diff_penalty(k: int, lam: float) -> np.ndarray:
     return lam * (D2.T @ D2)
 
 
-def first_diff_penalty(k: int, lam: float) -> np.ndarray:
-    """First-difference penalty D1^T D1 scaled by lam."""
-    D1 = np.diff(np.eye(k), n=1, axis=0)
-    return lam * (D1.T @ D1)
-
-
 def circular_second_diff_penalty(k: int, lam: float) -> np.ndarray:
     """Circular second-difference penalty for periodic splines."""
     I = np.eye(k)

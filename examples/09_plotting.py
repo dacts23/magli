@@ -8,7 +8,8 @@ decomposition plots for multi-term models.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import GAMCore
+from magli.eilers import GAMCore as EilersGAMCore
+from magli.wood import GAMCore as WoodGAMCore
 
 np.random.seed(42)
 n = 400
@@ -22,7 +23,7 @@ y = (
     + np.random.normal(0, 0.2, n)
 )
 
-model = GAMCore("s(0, n_splines=14) + l(1)", backend="eilers")
+model = EilersGAMCore("s(0, n_splines=14) + l(1)")
 model.fit(x, y)
 
 # Partial dependence: contribution of each term evaluated at the data
@@ -64,7 +65,7 @@ plt.show()
 # Compares fit quality plus agreement of the term contributions: the mean
 # absolute difference between the partial-dependence curves should be small
 # next to the terms' own variation printed above.
-wood_model = GAMCore("s(0, n_splines=14) + l(1)", backend="wood")
+wood_model = WoodGAMCore("s(0, n_splines=14) + l(1)")
 wood_model.fit(x, y)
 print("\n--- Backend comparison: Eilers-Marx (GCV grid search) vs Wood (REML) ---")
 print(f"{'Metric':<18}{'Eilers-Marx':>12}{'Wood':>12}")

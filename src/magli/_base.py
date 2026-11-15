@@ -34,11 +34,20 @@ def _validate_xyw(
     x_arr = np.asarray(x)
     if x_arr.ndim == 1:
         x_arr = x_arr.reshape(-1, 1)
+    elif x_arr.ndim != 2:
+        raise ValueError(f"x must be 1D or 2D, got {x_arr.ndim}D.")
+    if x_arr.shape[0] == 0 or x_arr.shape[1] == 0:
+        raise ValueError("Input x must be non-empty.")
     for col_idx in range(x_arr.shape[1]):
         col = x_arr[:, col_idx]
         try:
             col_float = np.asarray(col, dtype=float)
         except (ValueError, TypeError):
+            if any(
+                v is None or (isinstance(v, (float, np.floating)) and not np.isfinite(v))
+                for v in col
+            ):
+                raise ValueError("Input data contains None, NaN, or infinity.")
             continue
         if not np.all(np.isfinite(col_float)):
             raise ValueError("Input data contains NaN or infinity.")
@@ -158,11 +167,17 @@ class _GAMBase:
             offset += t.n_coefs
         self._coef_slices = slices
 
-    def _build_model_matrix(self, x: np.ndarray) -> np.ndarray:
-        blocks = [t.build_columns(x) for t in self._terms]
-        if self.fit_intercept:
+    @staticmethod
+    def _hstack_terms(
+        terms: List[Any], x: np.ndarray, fit_intercept: bool
+    ) -> np.ndarray:
+        blocks = [t.build_columns(x) for t in terms]
+        if fit_intercept:
             blocks.append(np.ones((len(x), 1), dtype=float))
         return np.hstack(blocks).astype(float)
+
+    def _build_model_matrix(self, x: np.ndarray) -> np.ndarray:
+        return self._hstack_terms(self._terms, x, self.fit_intercept)
 
     def predict(
         self,
@@ -225,10 +240,10 @@ class _GAMBase:
         Examples
         --------
         >>> import numpy as np
-        >>> import magli as mg
+        >>> from magli.eilers import LinGAM
         >>> x = np.linspace(0, 1, 50)
         >>> y = 2.0 * x**2 + np.random.default_rng(0).normal(0, 0.05, size=50)
-        >>> model = mg.LinGAM(n_splines=6).fit(x, y)
+        >>> model = LinGAM(n_splines=6).fit(x, y)
         >>> preds, ses = model.predict(np.array([0.2, 0.8]), se_fit=True)
         >>> preds.shape
         (2,)
@@ -307,10 +322,10 @@ class _GAMBase:
         Examples
         --------
         >>> import numpy as np
-        >>> import magli as mg
+        >>> from magli.eilers import GAMCore
         >>> X = np.column_stack([np.linspace(0, 1, 50), np.linspace(-1, 1, 50)])
         >>> y = np.sin(X[:, 0]) + X[:, 1]
-        >>> model = mg.GAMCore("s(0) + l(1)").fit(X, y)
+        >>> model = GAMCore("s(0) + l(1)").fit(X, y)
         >>> pdep_s0 = model.partial_dependence(0, X[:3])
         >>> pdep_s0.shape
         (3,)
@@ -402,10 +417,10 @@ class _GAMBase:
         Examples
         --------
         >>> import numpy as np
-        >>> import magli as mg
+        >>> from magli.eilers import LinGAM
         >>> x = np.linspace(0, 1, 40)
         >>> y = np.exp(x) + np.random.default_rng(1).normal(0, 0.05, size=40)
-        >>> model = mg.LinGAM(n_splines=6).fit(x, y)
+        >>> model = LinGAM(n_splines=6).fit(x, y)
         >>> ci = model.confidence_intervals(np.array([0.5]), width=0.95)
         >>> ci.shape
         (1, 2)
@@ -454,10 +469,10 @@ class _GAMBase:
         Examples
         --------
         >>> import numpy as np
-        >>> import magli as mg
+        >>> from magli.eilers import LinGAM
         >>> x = np.linspace(0, 1, 40)
         >>> y = np.sin(x) + np.random.default_rng(2).normal(0, 0.1, size=40)
-        >>> model = mg.LinGAM(n_splines=6).fit(x, y)
+        >>> model = LinGAM(n_splines=6).fit(x, y)
         >>> pi = model.prediction_intervals(np.array([0.5]), width=0.95)
         >>> ci = model.confidence_intervals(np.array([0.5]), width=0.95)
         >>> bool((pi[0, 1] - pi[0, 0]) > (ci[0, 1] - ci[0, 0]))
@@ -753,6 +768,7 @@ class _GAMBase:
         feat_mins = []
         feat_maxs = []
         feat_grids = []
+        is_numeric = []
         for j in range(p_predictors):
             col = x_arr[:, j]
             try:
@@ -766,41 +782,64 @@ class _GAMBase:
                     c_max + extrap_frac * c_rng,
                     n_grid,
                 )
+                is_numeric.append(True)
             except (ValueError, TypeError):
                 c_min, c_max, c_med = 0.0, 1.0, col[0]
                 grid = np.linspace(0.0, 1.0, n_grid)
+                is_numeric.append(False)
             feat_mins.append(c_min)
             feat_maxs.append(c_max)
             medians_list.append(c_med)
             feat_grids.append(grid)
         medians = np.array(medians_list, dtype=object)
 
-        first_term = self._terms[0] if self._terms else None
-        if first_term is not None:
-            first_feat = getattr(first_term, "feature", getattr(first_term, "features", [0])[0])
-            first_feat = first_feat if first_feat < p_predictors else 0
-        else:
-            first_feat = 0
+        term_feats = [
+            f
+            for t in self._terms
+            for f in (getattr(t, "features", None) or [getattr(t, "feature", 0)])
+            if f < p_predictors
+        ]
+        first_feat = next(
+            (f for f in term_feats if is_numeric[f]),
+            next((j for j, num in enumerate(is_numeric) if num), term_feats[0] if term_feats else 0),
+        )
 
-        x_overall = np.tile(medians, (n_grid, 1))
-        x_overall[:, first_feat] = feat_grids[first_feat]
-        y_overall = self.predict(x_overall)
-        sort_idx = np.argsort(x_overall[:, first_feat])
-        ax_overall.plot(
-            x_overall[sort_idx, first_feat], y_overall[sort_idx], "C0-", lw=2, label="GAM fit"
-        )
-        ax_overall.scatter(
-            x_arr[:, first_feat], y_arr, alpha=0.4, color="gray", s=10, label="Data"
-        )
-        if extrap_frac > 0:
-            ax_overall.axvspan(feat_grids[first_feat][0], feat_mins[first_feat], alpha=0.06, color="red")
-            ax_overall.axvspan(
-                feat_maxs[first_feat],
-                feat_grids[first_feat][-1],
-                alpha=0.06,
-                color="red",
-                label="Extrapolated",
+        if is_numeric[first_feat]:
+            x_overall = np.tile(medians, (n_grid, 1))
+            x_overall[:, first_feat] = feat_grids[first_feat]
+            y_overall = self.predict(x_overall)
+            sort_idx = np.argsort(x_overall[:, first_feat])
+            ax_overall.plot(
+                x_overall[sort_idx, first_feat], y_overall[sort_idx], "C0-", lw=2, label="GAM fit"
             )
+            ax_overall.scatter(
+                np.asarray(x_arr[:, first_feat], dtype=float),
+                y_arr,
+                alpha=0.4,
+                color="gray",
+                s=10,
+                label="Data",
+            )
+            if extrap_frac > 0:
+                ax_overall.axvspan(feat_grids[first_feat][0], feat_mins[first_feat], alpha=0.06, color="red")
+                ax_overall.axvspan(
+                    feat_maxs[first_feat],
+                    feat_grids[first_feat][-1],
+                    alpha=0.06,
+                    color="red",
+                    label="Extrapolated",
+                )
+        else:
+            unique_lvls = np.unique(np.asarray(x_arr[:, first_feat]).ravel())
+            lvl_pos = {lvl: idx for idx, lvl in enumerate(unique_lvls)}
+            x_lvls = np.tile(medians, (len(unique_lvls), 1))
+            x_lvls[:, first_feat] = unique_lvls
+            y_lvls = self.predict(x_lvls)
+            data_pos = [lvl_pos[v] for v in np.asarray(x_arr[:, first_feat]).ravel()]
+            ax_overall.scatter(data_pos, y_arr, alpha=0.4, color="gray", s=10, label="Data")
+            ax_overall.plot(range(len(unique_lvls)), y_lvls, "C0o-", lw=2, label="GAM fit")
+            ax_overall.set_xticks(range(len(unique_lvls)))
+            ax_overall.set_xticklabels(unique_lvls, fontsize=8)
         ax_overall.set(
             xlabel=_fname(first_feat) if p_predictors > 1 else "x",
             ylabel="y",

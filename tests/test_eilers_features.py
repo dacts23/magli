@@ -4,7 +4,8 @@ import numpy as np
 import pytest
 from scipy import stats
 
-from magli import GAMCore, LinGAM
+from magli.eilers import GAMCore, LinGAM
+from magli.wood import GAMCore as WoodGAMCore, LinGAM as WoodLinGAM
 from magli.eilers._bspline import b_spline_basis
 
 
@@ -14,7 +15,7 @@ def test_bspline_linear_extrapolation():
     x = np.linspace(0.0, 1.0, 50)
     y = 2.0 * x + 1.0
 
-    m = LinGAM(n_splines=6, lam=1.0, backend="eilers")
+    m = LinGAM(n_splines=6, lam=1.0)
     m.fit(x, y)
 
     x_extrap = np.array([-0.5, -0.2, 1.2, 1.5])
@@ -32,18 +33,18 @@ def test_nan_input_validation():
     x = np.array([0.1, 0.2, np.nan, 0.4])
     y = np.array([1.0, 2.0, 3.0, 4.0])
 
-    for backend in ("eilers", "wood"):
-        m = LinGAM(backend=backend)
+    for LinCls, GamCls in ((LinGAM, GAMCore), (WoodLinGAM, WoodGAMCore)):
+        m = LinCls()
         with pytest.raises(ValueError, match="Input data contains NaN or infinity"):
             m.fit(x, y)
 
-        g = GAMCore("s(0)", backend=backend)
+        g = GamCls("s(0)")
         with pytest.raises(ValueError, match="Input data contains NaN or infinity"):
             g.fit(x.reshape(-1, 1), y)
 
     x_inf = np.array([0.1, 0.2, np.inf, 0.4])
-    for backend in ("eilers", "wood"):
-        m = LinGAM(backend=backend)
+    for LinCls in (LinGAM, WoodLinGAM):
+        m = LinCls()
         with pytest.raises(ValueError, match="Input data contains NaN or infinity"):
             m.fit(x_inf, y)
 
@@ -54,14 +55,14 @@ def test_deviance_explained_accuracy():
     x = np.linspace(0, 1, 80)
     y = np.sin(2 * np.pi * x) + np.random.normal(0, 0.1, 80)
 
-    m = LinGAM(n_splines=10, lam=0.1, backend="eilers")
+    m = LinGAM(n_splines=10, lam=0.1)
     m.fit(x, y)
 
     tss = np.sum((y - np.mean(y)) ** 2)
     expected_r2 = 1.0 - m.statistics_["rss"] / tss
     assert np.isclose(m.deviance_explained(), expected_r2, atol=1e-7)
 
-    g = GAMCore("s(0, n_splines=10)", backend="eilers")
+    g = GAMCore("s(0, n_splines=10)")
     g.fit(x.reshape(-1, 1), y)
     expected_r2_g = 1.0 - g.statistics_["rss"] / tss
     assert np.isclose(g.deviance_explained(), expected_r2_g, atol=1e-7)
@@ -74,7 +75,7 @@ def test_eilers_gridsearch_diagonal_and_design_space():
     X = np.random.uniform(-1, 1, (n, 3))
     y = np.sin(np.pi * X[:, 0]) + 0.5 * (X[:, 1] ** 2) + 1.2 * X[:, 2] + np.random.normal(0, 0.2, n)
 
-    g = GAMCore("s(0, n_splines=10) + s(1, n_splines=8) + l(2)", backend="eilers")
+    g = GAMCore("s(0, n_splines=10) + s(1, n_splines=8) + l(2)")
     g.gridsearch(X, y)
     assert g.is_fitted
     assert g._terms[0].n_splines == 10
@@ -87,7 +88,7 @@ def test_eilers_gridsearch_diagonal_and_design_space():
         [1.0, 0.1],
         [5.0, 5.0],
     ])
-    g2 = GAMCore("s(0) + s(1)", backend="eilers")
+    g2 = GAMCore("s(0) + s(1)")
     g2.gridsearch(X, y, lam_grids=custom_lams)
     assert g2.is_fitted
     found_row = any(
@@ -96,11 +97,11 @@ def test_eilers_gridsearch_diagonal_and_design_space():
     )
     assert found_row
 
-    g3 = GAMCore("s(0) + s(1)", backend="eilers")
+    g3 = GAMCore("s(0) + s(1)")
     g3.gridsearch(X, y, lam=np.logspace(-2, 2, 5), n_jobs=2)
     assert g3.is_fitted
 
-    m = LinGAM(backend="eilers")
+    m = LinGAM()
     m.gridsearch(X[:, 0], y, lam=[0.01, 1.0], n_splines=[6, 8], n_jobs=-1)
     assert m.is_fitted
 
@@ -121,10 +122,10 @@ def test_directional_shape_constraints_enforced():
     y = np.sin(2.0 * np.pi * x) + np.random.normal(0.0, 0.1, 80)
     xg = np.linspace(0.0, 1.0, 200)
 
-    p_inc = LinGAM(n_splines=12, lam=0.6, constraint="mono_inc", backend="eilers").fit(x, y).predict(xg)
-    p_dec = LinGAM(n_splines=12, lam=0.6, constraint="mono_dec", backend="eilers").fit(x, y).predict(xg)
-    p_cvx = LinGAM(n_splines=12, lam=0.6, constraint="convex", backend="eilers").fit(x, y).predict(xg)
-    p_ccv = LinGAM(n_splines=12, lam=0.6, constraint="concave", backend="eilers").fit(x, y).predict(xg)
+    p_inc = LinGAM(n_splines=12, lam=0.6, constraint="mono_inc").fit(x, y).predict(xg)
+    p_dec = LinGAM(n_splines=12, lam=0.6, constraint="mono_dec").fit(x, y).predict(xg)
+    p_cvx = LinGAM(n_splines=12, lam=0.6, constraint="convex").fit(x, y).predict(xg)
+    p_ccv = LinGAM(n_splines=12, lam=0.6, constraint="concave").fit(x, y).predict(xg)
 
     assert np.min(np.diff(p_inc)) >= -1e-6
     assert np.max(np.diff(p_dec)) <= 1e-6
@@ -142,7 +143,7 @@ def test_eilers_vs_pygam_parity():
     y = np.sin(2.0 * np.pi * x) + np.random.normal(0.0, 0.15, 60)
 
     pg = pygam.LinearGAM(pygam.s(0, n_splines=10, lam=0.6, spline_order=3), fit_intercept=True).fit(x, y)
-    eg = LinGAM(n_splines=10, lam=0.6, spline_order=3, backend="eilers").fit(x, y)
+    eg = LinGAM(n_splines=10, lam=0.6, spline_order=3).fit(x, y)
 
     assert np.allclose(eg.predict(x), pg.predict(x), atol=1e-12)
     assert np.isclose(eg.statistics_["edof"], pg.statistics_["edof"], atol=1e-12)
@@ -159,7 +160,7 @@ def test_eilers_vs_pygam_parity():
         pg_c = pygam.LinearGAM(
             pygam.s(0, n_splines=10, lam=0.6, constraints=c_pg), fit_intercept=True
         ).fit(x, y)
-        eg_c = LinGAM(n_splines=10, lam=0.6, constraint=c_mg, backend="eilers").fit(x, y)
+        eg_c = LinGAM(n_splines=10, lam=0.6, constraint=c_mg).fit(x, y)
         assert np.allclose(eg_c.predict(x), pg_c.predict(x), atol=1e-6)
         assert np.isclose(eg_c.statistics_["edof"], pg_c.statistics_["edof"], atol=1e-5)
 
@@ -170,7 +171,7 @@ def test_eilers_n_less_than_m_and_custom_gamma():
     x = np.linspace(0.0, 1.0, 12)
     y = np.sin(2.0 * np.pi * x)
 
-    m = LinGAM(n_splines=20, lam=1.0, backend="eilers").fit(x, y)
+    m = LinGAM(n_splines=20, lam=1.0).fit(x, y)
     X = m.design_matrix_
     P = m._build_penalty()
     eps = np.finfo(float).eps
@@ -180,7 +181,7 @@ def test_eilers_n_less_than_m_and_custom_gamma():
     assert np.allclose(m.coef_, beta_exact, atol=1e-7)
     assert len(m.statistics_["edof_per_coef"]) == X.shape[1]
 
-    m_gs = LinGAM(backend="eilers").gridsearch(x, y, lam=[0.1, 1.0], n_splines=[8], gamma=2.0)
+    m_gs = LinGAM().gridsearch(x, y, lam=[0.1, 1.0], n_splines=[8], gamma=2.0)
     n = len(x)
     rss = m_gs.statistics_["rss"]
     edof = m_gs.statistics_["edof"]
@@ -194,8 +195,8 @@ def test_weighted_loglikelihood_includes_log_weights():
     y = np.sin(2.0 * np.pi * x) + np.random.normal(0.0, 0.1, 50)
     w = np.linspace(0.5, 2.0, 50)
 
-    for backend in ("eilers", "wood"):
-        m = LinGAM(n_splines=8, backend=backend).fit(x, y, weights=w)
+    for backend, LinCls in (("eilers", LinGAM), ("wood", WoodLinGAM)):
+        m = LinCls(n_splines=8).fit(x, y, weights=w)
         mu = m.predict(x)
         s = m.statistics_["scale"]
         # wood follows mgcv: logLik uses the ML scale rss/n, not the REML/GCV scale estimate
@@ -211,7 +212,7 @@ def test_eilers_edof_per_coef_and_wood_summary_pvalues():
     X = rng.uniform(0.0, 1.0, (n, 3))
     y = np.sin(2.0 * np.pi * X[:, 0]) + 1.5 * X[:, 2] + rng.normal(0.0, 0.2, n)
 
-    g = GAMCore("s(0, n_splines=10, lam=2.0) + s(1, n_splines=10, lam=50.0) + l(2)", backend="eilers").fit(X, y)
+    g = GAMCore("s(0, n_splines=10, lam=2.0) + s(1, n_splines=10, lam=50.0) + l(2)").fit(X, y)
     X_mat = g._build_model_matrix(X)
     P = g._build_penalty()
     eps = np.finfo(float).eps
@@ -227,7 +228,7 @@ def test_eilers_edof_per_coef_and_wood_summary_pvalues():
     assert "Parametric coefficients:" in s_out
     assert "GCV =" in s_out
 
-    m_lin = LinGAM(n_splines=10, lam=1.0, backend="eilers").fit(X[:, 0], y)
+    m_lin = LinGAM(n_splines=10, lam=1.0).fit(X[:, 0], y)
     assert "Approximate significance of smooth terms:" in m_lin.summary()
 
 
@@ -238,6 +239,47 @@ def test_eilers_constrained_small_scale():
     y = 1e-6 * (np.sin(2.0 * np.pi * x) + rng.normal(0.0, 0.1, 60))
     xg = np.linspace(0.0, 1.0, 150)
 
-    p_inc = LinGAM(n_splines=10, lam=0.6, constraint="mono_inc", backend="eilers").fit(x, y).predict(xg)
+    p_inc = LinGAM(n_splines=10, lam=0.6, constraint="mono_inc").fit(x, y).predict(xg)
     assert np.min(np.diff(p_inc)) >= -1e-12
+
+
+def test_eilers_huge_lam_and_gridsearch_flat_and_tensor_orders():
+    """Verify huge lam does not raise LinAlgError, and gridsearch handles flat lists and per-marginal tensor orders."""
+    rng = np.random.default_rng(11)
+    x = np.linspace(0.0, 1.0, 60)
+    y = 2.0 * x + np.sin(2.0 * np.pi * x) + rng.normal(0.0, 0.1, 60)
+
+    # 1. Huge lam in solve_pirls without LinAlgError
+    for lam_val in (1e8, 1e12):
+        m = LinGAM(n_splines=12, lam=lam_val).fit(x, y)
+        pred = m.predict(x)
+        assert np.all(np.isfinite(pred))
+
+    X = rng.uniform(0.0, 1.0, (60, 2))
+    y2 = np.sin(np.pi * X[:, 0]) + 1.5 * X[:, 1] + rng.normal(0.0, 0.1, 60)
+
+    # 2. Flat list n_splines on mixed smooth + linear model
+    g1 = GAMCore("s(0) + l(1)").gridsearch(X, y2, n_splines=[6, 8, 10])
+    assert g1._terms[0].n_splines in (6, 8, 10)
+
+    # 3. Flat list lam on 1-slot smooth model
+    g2 = GAMCore("s(0, n_splines=10)").gridsearch(X[:, :1], y2, lam=[0.1, 1.0, 10.0])
+    assert g2._terms[0].lam in (0.1, 1.0, 10.0)
+
+    # 4. Flat list lam sweeps each value jointly across searched terms (linear unsearched keeps 0.0)
+    X_fac = np.column_stack([rng.integers(0, 3, 60), X[:, 1]]).astype(float)
+    g3 = GAMCore("f(0) + l(1)").gridsearch(X_fac, y2, lam=[0.01, 100.0])
+    assert g3._terms[0].lam == 100.0
+    assert g3._terms[1].lam == 0.0
+
+    g3_ss = GAMCore("s(0) + s(1)").gridsearch(X, y2, lam=[0.01, 100.0])
+    assert g3_ss._terms[0].lam == g3_ss._terms[1].lam
+    assert g3_ss._terms[0].lam in (0.01, 100.0)
+
+    # 5. te() marginal spline_order=(3, 1) allows k=2 on the second marginal
+    g4 = GAMCore("te(0, 1, n_splines=(5, 4), spline_order=(3, 1))").gridsearch(
+        X, y2, n_splines=[[4, 5], [2, 3]], lam=[0.1, 1.0]
+    )
+    assert g4._terms[0].n_splines_per[1] in (2, 3)
+
 

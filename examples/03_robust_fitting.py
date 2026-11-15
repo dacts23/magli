@@ -18,7 +18,8 @@ MAD-based scale estimate (sigma = MAD / 0.6745), then pass them to ``fit()``:
 
 import matplotlib.pyplot as plt
 import numpy as np
-from magli import LinGAM
+from magli.eilers import LinGAM as EilersLinGAM
+from magli.wood import LinGAM as WoodLinGAM
 
 np.random.seed(42)
 
@@ -39,13 +40,13 @@ w_huber = np.minimum(1.0, 1.345 / np.maximum(u, 1e-6))
 w_tukey = np.where(u < 4.685, (1.0 - (u / 4.685) ** 2) ** 2, 1e-6)
 
 # --- Fit Eilers-Marx & Wood models with precomputed weights ---
-em_ols = LinGAM(n_splines=14, backend="eilers").fit(x, y)
-em_hub = LinGAM(n_splines=14, backend="eilers").fit(x, y, weights=w_huber)
-em_tuk = LinGAM(n_splines=14, backend="eilers").fit(x, y, weights=w_tukey)
+em_ols = EilersLinGAM(n_splines=14).fit(x, y)
+em_hub = EilersLinGAM(n_splines=14).fit(x, y, weights=w_huber)
+em_tuk = EilersLinGAM(n_splines=14).fit(x, y, weights=w_tukey)
 
-wd_ols = LinGAM(k=14, bs="cr", backend="wood").fit(x, y)
-wd_hub = LinGAM(k=14, bs="cr", backend="wood").fit(x, y, weights=w_huber)
-wd_tuk = LinGAM(k=14, bs="cr", backend="wood").fit(x, y, weights=w_tukey)
+wd_ols = WoodLinGAM(k=14, bs="cr").fit(x, y)
+wd_hub = WoodLinGAM(k=14, bs="cr").fit(x, y, weights=w_huber)
+wd_tuk = WoodLinGAM(k=14, bs="cr").fit(x, y, weights=w_tukey)
 
 rmse = lambda m: float(np.sqrt(np.mean((m.predict(x) - y_true) ** 2)))
 

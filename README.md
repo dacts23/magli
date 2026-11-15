@@ -1,16 +1,16 @@
 # magli: Generalized Additive Models (GAMs) in Python
 
-**magli (Modelo Aditivo Generalizado Lineal)**: Modern Pythonic Generalized Additive Models (GAMs) based on classical statistical literature. It supports both single-term smooths (`GAM` / `LinGAM`) and multi-term formula-based models (`GAMCore`) with automatic hyperparameter tuning.
+**magli (Modelo Aditivo Generalizado Lineal)**: Modern Pythonic Generalized Additive Models (GAMs) based on classical statistical literature. Choose your engine explicitly via `magli.wood` (Simon Wood's `mgcv` splines + REML/GCV) or `magli.eilers` (Eilers & Marx P-splines + shape constraints), each providing single-term (`LinGAM` / `GAM`) and multi-term formula (`GAMCore`) models.
 
 > **Full documentation:** [https://dacts23.github.io/magli/](https://dacts23.github.io/magli/)
 
 ---
 
-## Which Backend Engine Should I Use?
+## Which Engine Should I Use?
 
-`magli` provides two complementary statistical engines under a unified API:
+`magli` provides two complementary statistical engines via explicit submodules:
 
-| Feature / Goal | **`backend="wood"`** (Default) | **`backend="eilers"`** |
+| Feature / Goal | **`magli.wood`** | **`magli.eilers`** |
 | :--- | :--- | :--- |
 | **Smoothing parameter ($\lambda$)** | **Continuous REML or GCV optimization** (automatic during `.fit()`, no grid search needed) | **Discrete GCV grid search** over candidate $(\lambda, K)$ pairs |
 | **Basis function suite** | Thin plate (`tp`, `ts`), Cubic (`cr`, `cs`), Cyclic (`cc`), P-splines (`ps`, `cp`), B-splines (`bs`), Random effects (`re`) | Uniform B-splines (`bs`) with linear extrapolation |
@@ -69,14 +69,14 @@ In the Wood engine, smoothing parameters are estimated continuously during fit v
 
 ```python
 import numpy as np
-from magli import GAM, GAMCore
+from magli.wood import GAM, GAMCore
 
 np.random.seed(42)
 x = np.linspace(0, 1, 200)
 y = np.sin(2 * np.pi * x) + np.random.normal(0, 0.2, len(x))
 
 # Single-term model with cubic regression splines
-model = GAM(k=10, bs="cr", backend="wood")
+model = GAM(k=10, bs="cr")
 model.fit(x, y)
 
 print(model.summary())
@@ -91,7 +91,7 @@ Multi-term formula with tensor-product interactions and linear terms:
 X = np.random.uniform(0, 10, (200, 3))
 y_multi = np.sin(X[:, 0]) + 0.5 * X[:, 1] + 1.2 * X[:, 2] + np.random.normal(0, 0.2, 200)
 
-gam = GAMCore("te(0, 1, bs='cr', k=4) + l(2)", backend="wood")
+gam = GAMCore("te(0, 1, bs='cr', k=4) + l(2)")
 gam.fit(X, y_multi)
 print(gam.summary())
 ```
@@ -102,14 +102,14 @@ The Eilers-Marx engine provides discrete GCV grid searches and shape constraints
 
 ```python
 import numpy as np
-from magli import GAM
+from magli.eilers import GAM
 
 # Reusing synthetic data x, y or generating new series
 x = np.linspace(0, 1, 200)
 y = np.sin(2 * np.pi * x) + np.random.normal(0, 0.2, len(x))
 
 # Fast B-spline grid search over candidate lambda and spline counts
-model = GAM(backend="eilers")
+model = GAM()
 model.gridsearch(x, y)
 
 y_pred = model.predict(x)
@@ -121,7 +121,7 @@ Enforcing soft shape constraints (e.g. monotonic increasing dose-response):
 
 ```python
 # Enforce monotonic increasing trend
-mono_model = GAM(n_splines=12, constraint="mono_inc", backend="eilers")
+mono_model = GAM(n_splines=12, constraint="mono_inc")
 mono_model.fit(x, y)
 ```
 
@@ -129,7 +129,7 @@ Fitting with observation weights (e.g. inverse variance or down-weighted outlier
 
 ```python
 # Weighted penalized least-squares
-weighted_model = GAM(n_splines=12, backend="eilers")
+weighted_model = GAM(n_splines=12)
 weighted_model.fit(x, y, weights=w)
 ```
 

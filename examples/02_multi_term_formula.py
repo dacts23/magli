@@ -8,7 +8,8 @@ Shows how the formula string maps features to model components.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import GAMCore
+from magli.eilers import GAMCore as EilersGAMCore
+from magli.wood import GAMCore as WoodGAMCore
 
 np.random.seed(42)
 n = 400
@@ -23,7 +24,7 @@ y = (
 )
 
 # Fit a 2-term model
-model = GAMCore("s(0, n_splines=12) + l(1)", backend="eilers")
+model = EilersGAMCore("s(0, n_splines=12) + l(1)")
 model.fit(x, y)
 
 print("=== Multi-Term GAMCore ===")
@@ -51,7 +52,7 @@ plt.show()
 # Same formula parses for both backends (n_splines/k and lam/sp are aliases).
 # Eilers-Marx tunes via discrete GCV grid search (above); Wood estimates smoothing
 # automatically via REML with a single fit.
-wood_model = GAMCore("s(0, n_splines=12) + l(1)", backend="wood")
+wood_model = WoodGAMCore("s(0, n_splines=12) + l(1)")
 wood_model.fit(x, y)
 print("\n--- Backend comparison: Eilers-Marx (GCV grid search) vs Wood (REML) ---")
 print(f"{'Metric':<18}{'Eilers-Marx':>12}{'Wood':>12}")

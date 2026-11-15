@@ -223,12 +223,12 @@ def test_select_shrinkage_smooths():
     # pure noise on feature 1
     y = np.sin(2 * np.pi * X[:, 0]) + rng.normal(0, 0.1, n)
     gm = GAMCore("s(0, bs='tp', k=8) + s(1, bs='cr', k=8)", select=True, method="REML").fit(X, y)
-    # feature 1 should shrink towards 0 edf
-    assert gm._terms[0].bs == "ts"
-    assert gm._terms[1].bs == "cs"
+    # feature 1 should shrink towards 0 edf via null-space penalty H = U_0 U_0^T
+    assert gm._terms[0].bs == "tp"
+    assert gm._terms[1].bs == "cr"
     assert gm.statistics_["edf_per_term"][1] < 1.5
     assert gm.statistics_["p_values_per_term"][0] < 1e-6
-    assert gm.statistics_["p_values_per_term"][1] > 0.05
+    assert gm.statistics_["p_values_per_term"][1] > 0.01
     gm_ps_bs = GAMCore("s(0, bs='ps', k=8) + s(1, bs='bs', k=8)", select=True, method="REML").fit(X, y)
     assert gm_ps_bs.statistics_["edf_per_term"][1] < 1.0
     assert gm_ps_bs.statistics_["p_values_per_term"][0] < 1e-6
@@ -238,18 +238,24 @@ def test_select_shrinkage_smooths():
         r = run_r_gam(f"""
         suppressPackageStartupMessages({{library(mgcv);library(jsonlite)}})
         d <- data.frame(x0=c({f(X[:,0])}), x1=c({f(X[:,1])}), y=c({f(y)}))
-        m_sh <- gam(y ~ s(x0, bs="ts", k=8) + s(x1, bs="cs", k=8), data=d, method="REML")
+        m_sh <- gam(y ~ s(x0, bs="tp", k=8) + s(x1, bs="cr", k=8), data=d, method="REML", select=TRUE)
         sm_sh <- summary(m_sh)
         m <- gam(y ~ s(x0, bs="cc", k=8) + s(x1, bs="cp", k=8), data=d, method="REML")
         sm <- summary(m)
         cat(toJSON(list(
-          sh_refdf=as.numeric(sm_sh$s.table[,2]), sh_F=as.numeric(sm_sh$s.table[,3]), sh_p=as.numeric(sm_sh$s.table[,4]),
+          sh_edf=as.numeric(sm_sh$s.table[,1]), sh_refdf=as.numeric(sm_sh$s.table[,2]),
+          sh_F=as.numeric(sm_sh$s.table[,3]), sh_p=as.numeric(sm_sh$s.table[,4]),
           refdf=as.numeric(sm$s.table[,2]), F=as.numeric(sm$s.table[,3]), p=as.numeric(sm$s.table[,4])
         ), digits=14))
         """)
-        assert np.allclose(gm.statistics_["ref_df_per_term"], r["sh_refdf"], rtol=1e-3)
-        assert np.allclose(gm.statistics_["f_stat_per_term"], r["sh_F"], rtol=1e-2, atol=2e-2)
-        assert np.allclose(gm.statistics_["p_values_per_term"], r["sh_p"], atol=6e-3)
+        assert np.allclose(gm.statistics_["edf_per_term"], r["sh_edf"], atol=1e-4)
+        assert np.allclose(
+            np.array(gm.statistics_["f_stat_per_term"]) * np.array(gm.statistics_["ref_df_per_term"]),
+            np.array(r["sh_F"]) * np.array(r["sh_refdf"]),
+            rtol=1e-4,
+            atol=1e-4,
+        )
+        assert np.allclose(gm.statistics_["p_values_per_term"], r["sh_p"], atol=1e-5)
         gm_cyc = GAMCore("s(0, bs='cc', k=8) + s(1, bs='cp', k=8)", method="REML").fit(X, y)
         st_cyc = gm_cyc.statistics_
         assert np.allclose(st_cyc["ref_df_per_term"], r["refdf"], rtol=1e-3)

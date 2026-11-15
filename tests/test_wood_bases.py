@@ -135,7 +135,7 @@ def test_wood_constraint_validation():
 
 
 def test_m_option_validated_and_coerced():
-    """m raises for bases that ignore it; int and list forms act like the tuple form on ps/cp/bs."""
+    """m raises for bases that ignore it; int and list forms match R mgcv rules on ps/cp/bs."""
     from magli.wood._smooths import build_smooth_basis
 
     x = np.linspace(0, 1, 50)
@@ -145,11 +145,19 @@ def test_m_option_validated_and_coerced():
         build_smooth_basis(x, bs="cr", k=8, m=2)
     Xa, [Sa], _ = build_smooth_basis(x, bs="ps", k=8, m=(2, 1))
     Xb, [Sb], _ = build_smooth_basis(x, bs="ps", k=8, m=[2, 1])
-    _, [Sc], _ = build_smooth_basis(x, bs="ps", k=8, m=1)
+    Xp1, [Sp1], _ = build_smooth_basis(x, bs="ps", k=8, m=(1, 1))
+    Xc1, [Sc1], _ = build_smooth_basis(x, bs="ps", k=8, m=1)
     assert np.allclose(Xa, Xb)
     assert np.allclose(Sa, Sb)
-    assert np.allclose(Sa, Sc)
-    with pytest.raises(ValueError, match="m must be"):
+    assert np.allclose(Xp1, Xc1)
+    assert np.allclose(Sp1, Sc1)
+    Xbs_tup, [Sbs_tup], _ = build_smooth_basis(x, bs="bs", k=8, m=(2, 1))
+    Xbs_int, [Sbs_int], _ = build_smooth_basis(x, bs="bs", k=8, m=2)
+    assert np.allclose(Xbs_tup, Xbs_int)
+    assert np.allclose(Sbs_tup, Sbs_int)
+    with pytest.raises(ValueError, match="m must be non-negative"):
+        build_smooth_basis(x, bs="ps", k=8, m=-1)
+    with pytest.raises(ValueError, match="m must be a non-negative"):
         build_smooth_basis(x, bs="ps", k=8, m=[1, 2, 3])
 
 

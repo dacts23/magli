@@ -7,7 +7,8 @@ Restrict grid search to specific terms and supply custom candidate grids.
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import GAMCore
+from magli.eilers import GAMCore as EilersGAMCore
+from magli.wood import GAMCore as WoodGAMCore
 
 np.random.seed(42)
 n = 400
@@ -23,7 +24,7 @@ y = (
     + np.random.normal(0, 0.2, n)
 )
 
-model = GAMCore("s(0) + s(1) + l(2)", backend="eilers")
+model = EilersGAMCore("s(0) + s(1) + l(2)")
 model.fit(x, y)
 
 print("=== Before grid search ===")
@@ -66,7 +67,7 @@ plt.show()
 # GCV (as above, including selective search_terms); Wood estimates smoothing
 # continuously via REML in a single fit, and its gridsearch() only varies the
 # basis dimension k. Same final complexity metrics on the same data:
-wood_model = GAMCore("s(0) + s(1) + l(2)", backend="wood")
+wood_model = WoodGAMCore("s(0) + s(1) + l(2)")
 wood_model.fit(x, y)
 wood_edf_before_ksearch = wood_model.statistics_['edof']
 print("\n--- Backend comparison: Eilers-Marx (discrete GCV grids) vs Wood (REML) ---")

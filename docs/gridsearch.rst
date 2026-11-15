@@ -17,15 +17,15 @@ In the Wood backend, smoothing parameters are estimated automatically during mod
 
 .. code-block:: python
 
-   from magli import LinGAM, GAMCore
+   from magli.wood import LinGAM, GAMCore
 
    # Single-term - REML estimates lambda automatically
-   m = LinGAM(k=10, bs="cr", backend="wood")
+   m = LinGAM(k=10, bs="cr")
    m.fit(x, y)
    print(f"Optimal estimated lambda: {m.lam:.4f}")
 
    # Multi-term - Simultaneous multi-dimensional REML optimization
-   g = GAMCore("s(0, k=10) + s(1, k=10) + l(2)", backend="wood")
+   g = GAMCore("s(0, k=10) + s(1, k=10) + l(2)")
    g.fit(X, y)
    print(g.summary())
 
@@ -49,9 +49,9 @@ the Generalised Cross Validation (GCV) criterion.
 
 .. code-block:: python
 
-   from magli import LinGAM, GAMCore
+   from magli.eilers import LinGAM, GAMCore
 
-   m = LinGAM(n_splines=10, backend="eilers")
+   m = LinGAM(n_splines=10)
    m.gridsearch(x, y)
 
 .. figure:: _static/images/gcv_curve_and_edf.png
@@ -91,7 +91,7 @@ When confident in the parameters for some terms, restrict the grid search to a s
 
 .. code-block:: python
 
-   model = GAMCore("s(0) + s(1) + te(0, 1)", backend="eilers")
+   model = GAMCore("s(0) + s(1) + te(0, 1)")
 
    # Search only univariate splines (s)
    model.gridsearch(x, y, search_terms=['s'])

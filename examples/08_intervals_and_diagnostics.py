@@ -8,14 +8,15 @@ statistics (AIC, BIC, deviance explained, log-likelihood).
 
 import numpy as np
 import matplotlib.pyplot as plt
-from magli import LinGAM
+from magli.eilers import LinGAM as EilersLinGAM
+from magli.wood import LinGAM as WoodLinGAM
 
 np.random.seed(42)
 
 x = np.random.uniform(0, 10, 300)
 y = 2 * np.sin(x) + 0.5 * x + np.random.normal(0, 0.4, 300)
 
-model = LinGAM(backend="eilers")
+model = EilersLinGAM()
 model.gridsearch(x, y)
 
 print("=== Diagnostics ===")
@@ -63,7 +64,7 @@ plt.show()
 # Same data and basis size, each backend's idiomatic tuning (GCV grid search
 # vs REML). Compares fit quality plus the mean widths of the 95% confidence
 # and prediction intervals both backends provide.
-wood_model = LinGAM(k=model.n_splines, bs="cr", backend="wood")
+wood_model = WoodLinGAM(k=model.n_splines, bs="cr")
 wood_model.fit(x, y)
 ci_wood = wood_model.confidence_intervals(x, width=0.95)
 pi_wood = wood_model.prediction_intervals(x, width=0.95)

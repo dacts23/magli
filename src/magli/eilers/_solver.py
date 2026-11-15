@@ -13,7 +13,10 @@ def solve_pirls(
     """Solve penalized least squares: (X^T X + P) beta = X^T y."""
     n, m = X.shape
     eps = np.finfo(float).eps
-    E = np.linalg.cholesky(np.diag(np.ones(m) * np.sqrt(eps)) + P).T
+    # Eigendecompose symmetric P instead of Cholesky so huge lam cannot fail on tiny negative roundoff.
+    P_sym = 0.5 * (P + P.T)
+    eigvals, eigvecs = np.linalg.eigh(P_sym)
+    E = np.sqrt(np.maximum(eigvals, 0.0) + np.sqrt(eps))[:, None] * eigvecs.T
     Q, R = np.linalg.qr(X)
     min_nm = min(m, n)
     U, d, Vt = np.linalg.svd(np.vstack([R, E]), full_matrices=False)

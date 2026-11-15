@@ -39,17 +39,18 @@ penalised to avoid overfitting.
    Penalised GAMs balance model flexibility against smoothness by capturing nonlinear
    structure without chasing random noise.
 
-The package provides two complementary engines accessible through a single, unified interface
-through :class:`GAM` / :class:`LinGAM` for single-term smooths and :class:`GAMCore` for multi-term formulas:
+The package provides two complementary engines via explicit submodules
+:mod:`magli.wood` and :mod:`magli.eilers`, each exposing :class:`LinGAM` (aliased as :class:`GAM`)
+for single-term smooths and :class:`GAMCore` for multi-term formulas:
 
-1. **Wood (2011) Backend** (``backend='wood'``, default):
+1. **Wood (2011) Engine** (:mod:`magli.wood`):
    Python implementation of Simon Wood's GAM methods (Wood 2011, 2017).
    Supports multiple basis types (``'tp'``, ``'ts'``, ``'cr'``, ``'cs'``, ``'cc'``,
    ``'ps'``, ``'cp'``, ``'bs'``, ``'re'``, ``'te'``), null-space constraint absorption,
    and **automatic REML / GCV smoothing parameter optimization** (no grid search required).
    Outputs formatted summary tables with approximate F-tests and p-values (Wood 2013).
 
-2. **Eilers & Marx (1996) Backend** (``backend='eilers'``):
+2. **Eilers & Marx (1996) Engine** (:mod:`magli.eilers`):
    Clean, fast B-splines with discrete GCV grid search and soft shape constraints
    (monotonic increasing/decreasing, convex, concave, periodic).
 
@@ -80,14 +81,14 @@ Using the **Wood backend** with automatic REML smoothing parameter estimation:
 .. code-block:: python
 
    import numpy as np
-   from magli import LinGAM, GAMCore
+   from magli.wood import LinGAM, GAMCore
 
    np.random.seed(42)
    x = np.linspace(0, 1, 200)
    y = np.sin(2 * np.pi * x) + np.random.normal(0, 0.2, 200)
 
    # Single-term model with cubic regression splines and REML estimation
-   model = LinGAM(k=10, bs="cr", backend="wood")
+   model = LinGAM(k=10, bs="cr")
    model.fit(x, y)
 
    # Formatted summary table
@@ -104,7 +105,7 @@ Multi-term formula with tensor products:
    X = np.random.uniform(0, 10, (200, 3))
    y_multi = np.sin(X[:, 0]) + 0.5 * X[:, 1] + 1.2 * X[:, 2] + np.random.normal(0, 0.2, 200)
 
-   gam = GAMCore("te(0, 1, k=5) + l(2)", backend="wood")
+   gam = GAMCore("te(0, 1, k=5) + l(2)")
    gam.fit(X, y_multi)
    print(gam.summary())
 

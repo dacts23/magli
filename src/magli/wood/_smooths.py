@@ -19,6 +19,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 import numpy as np
 from scipy import linalg
 from scipy.interpolate import BSpline
+from scipy.sparse.linalg import ArpackError, eigsh
 
 
 def _place_knots(x: np.ndarray, nk: int) -> np.ndarray:
@@ -59,7 +60,7 @@ def _get_cr_FS(xk: np.ndarray) -> Tuple[np.ndarray, np.ndarray]:
     ab = np.zeros((2, n2), dtype=float)
     ab[0, :] = (h[:-1] + h[1:]) / 3.0
     ab[1, : n2 - 1] = h[1:-1] / 6.0
-    B_inv_D = linalg.solveh_banded(ab, D, lower=True)
+    B_inv_D = D / ab[0, 0] if n2 == 1 else linalg.solveh_banded(ab, D, lower=True)
 
     F = np.zeros((n, n), dtype=float)
     F[1:-1, :] = B_inv_D
@@ -238,7 +239,11 @@ def _eval_cc_basis(x: np.ndarray, xk: np.ndarray, BD: np.ndarray) -> np.ndarray:
 
 
 def _spline_design(
-    knots: np.ndarray, x: np.ndarray, ord: int, outer_ok: bool = False
+    knots: np.ndarray,
+    x: np.ndarray,
+    ord: int,
+    outer_ok: bool = False,
+    extrapolate_linear: bool = False,
 ) -> np.ndarray:
     """Evaluate standard B-spline design matrix."""
     n_bases = len(knots) - ord
@@ -252,7 +257,17 @@ def _spline_design(
     )
     c = np.zeros((len(k_pad) - ord, n_bases), dtype=float)
     c[k_deg : k_deg + n_bases, :] = np.eye(n_bases)
-    out = BSpline(k_pad, c, k_deg, extrapolate=False)(x)
+    sp = BSpline(k_pad, c, k_deg, extrapolate=False)
+    out = sp(x)
+    if extrapolate_linear and k_deg >= 1 and len(knots) > 2 * k_deg:
+        lo, hi = knots[k_deg], knots[-k_deg - 1]
+        m_lo, m_hi = x < lo, x > hi
+        if np.any(m_lo) or np.any(m_hi):
+            dsp = sp.derivative(1)
+            if np.any(m_lo):
+                out[m_lo] = sp(lo) + (x[m_lo, None] - lo) * dsp(lo)
+            if np.any(m_hi):
+                out[m_hi] = sp(hi) + (x[m_hi, None] - hi) * dsp(hi)
     np.nan_to_num(out, copy=False, nan=0.0)
     return out
 
@@ -305,7 +320,7 @@ def build_ps_basis(
         knots_full = np.asarray(knots, dtype=float).ravel()
 
     order = m_basis + 2
-    X = _spline_design(knots_full, x, order, outer_ok=True)
+    X = _spline_design(knots_full, x, order, outer_ok=True, extrapolate_linear=True)
     D = np.diff(np.eye(k), n=m_pen, axis=0)
     S = D.T @ D
     S = 0.5 * (S + S.T)
@@ -368,8 +383,8 @@ def build_cp_basis(
             "knots": knots_seq,
             "ord": order,
             "m": m,
-            "rank": k - 1,
-            "null_space_dim": 1,
+            "rank": k if m_pen == 0 else k - 1,
+            "null_space_dim": 0 if m_pen == 0 else 1,
         },
     )
 
@@ -401,7 +416,7 @@ def build_bs_basis(
         knots_full = np.asarray(knots, dtype=float).ravel()
 
     order = m1 + 1
-    X = _spline_design(knots_full, x, order, outer_ok=True)
+    X = _spline_design(knots_full, x, order, outer_ok=True, extrapolate_linear=True)
 
     k0 = knots_full[m1 : m1 + nk]
     h = np.diff(k0)
@@ -474,6 +489,24 @@ def _wood_qt(A: np.ndarray) -> np.ndarray:
     return Q
 
 
+def _top_k_eig(E: np.ndarray, k: int) -> Tuple[np.ndarray, np.ndarray]:
+    """Top-k eigenpairs of symmetric E by magnitude, ordered descending by value."""
+    m = E.shape[0]
+    if m > 200 and 0 < k < m - 2:
+        try:
+            eigvals, eigvecs = eigsh(
+                E, k=k, which="LM", v0=np.linspace(1.0, 2.0, m)
+            )
+            sort_idx = np.argsort(eigvals)[::-1]
+            return eigvals[sort_idx], eigvecs[:, sort_idx]
+        except ArpackError:
+            pass
+    eigvals, eigvecs = np.linalg.eigh(E)
+    top_k = np.argsort(np.abs(eigvals))[::-1][:k]
+    sort_idx = top_k[np.argsort(eigvals[top_k])[::-1]]
+    return eigvals[sort_idx], eigvecs[:, sort_idx]
+
+
 def build_tp_basis(
     x: np.ndarray,
     k: int = 10,
@@ -500,10 +533,7 @@ def build_tp_basis(
         xk = _place_knots(xu, max_knots)
         E = _eta_1d(xk[:, None] - xk[None, :])
         T = np.column_stack([np.ones(len(xk)), xk])
-        eigvals, eigvecs = np.linalg.eigh(E)
-        top_k = np.argsort(np.abs(eigvals))[::-1][:k]
-        sort_idx = top_k[np.argsort(eigvals[top_k])[::-1]]
-        v_k, U_k = eigvals[sort_idx], eigvecs[:, sort_idx]
+        v_k, U_k = _top_k_eig(E, k)
         Q = _wood_qt(T.T @ U_k)
         UkZ = U_k @ Q[:, : k - M]
         X_smooth = _eta_1d(x_c[:, None] - xk[None, :]) @ UkZ
@@ -512,10 +542,7 @@ def build_tp_basis(
     else:
         E = _eta_1d(xu[:, None] - xu[None, :])
         T = np.column_stack([np.ones(nu), xu])
-        eigvals, eigvecs = np.linalg.eigh(E)
-        top_k = np.argsort(np.abs(eigvals))[::-1][:k]
-        sort_idx = top_k[np.argsort(eigvals[top_k])[::-1]]
-        v_k, U_k = eigvals[sort_idx], eigvecs[:, sort_idx]
+        v_k, U_k = _top_k_eig(E, k)
         Q = _wood_qt(T.T @ U_k)
         X_u = (U_k * v_k[None, :]) @ Q
         X_u[:, k - M :] = T
@@ -576,20 +603,30 @@ def predict_smooth_basis(x: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
     if bs == "cp":
         return _c_spline_des(x, meta["knots"], meta["ord"])
     if bs in ("ps", "bs", "b"):
-        return _spline_design(meta["knots"], x, meta["ord"], outer_ok=True)
+        return _spline_design(
+            meta["knots"], x, meta["ord"], outer_ok=True, extrapolate_linear=True
+        )
     raise ValueError(f"Unknown basis type bs='{bs}' in predict_smooth_basis.")
 
 
-def _pair_m(m: Any, default: Tuple[int, int]) -> Tuple[int, int]:
-    """Coerce m to a (basis, penalty) pair; a single int sets the penalty order."""
+def _pair_m(
+    m: Any, default: Tuple[int, int], *, bs_mode: bool = False
+) -> Tuple[int, int]:
+    """Coerce m to a (basis, penalty) pair matching R mgcv's scalar rules."""
     if m is None:
         return default
-    if isinstance(m, (int, np.integer)):
-        return (default[0], int(m))
+    if isinstance(m, (int, np.integer)) and not isinstance(m, bool):
+        m_int = int(m)
+        if m_int < 0:
+            raise ValueError(f"m must be non-negative, got {m!r}.")
+        return (m_int, max(0, m_int - 1)) if bs_mode else (m_int, m_int)
     if isinstance(m, (tuple, list)) and len(m) == 2:
-        return (int(m[0]), int(m[1]))
+        pair = (int(m[0]), int(m[1]))
+        if pair[0] < 0 or pair[1] < 0:
+            raise ValueError(f"m entries must be non-negative, got {m!r}.")
+        return pair
     raise ValueError(
-        f"m must be a single penalty order or a pair like {default}, got {m!r}."
+        f"m must be a non-negative order or pair like {default}, got {m!r}."
     )
 
 
@@ -620,7 +657,9 @@ def build_smooth_basis(
     if bs == "cp":
         return build_cp_basis(x, k=k, knots=knots, m=_pair_m(m, (2, 2)))
     if bs in ("bs", "b"):
-        return build_bs_basis(x, k=k, knots=knots, m=_pair_m(m, (3, 2)))
+        return build_bs_basis(
+            x, k=k, knots=knots, m=_pair_m(m, (3, 2), bs_mode=True)
+        )
     if bs == "re":
         if m is not None:
             raise ValueError("m is not supported for bs='re'.")
