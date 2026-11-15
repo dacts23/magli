@@ -34,6 +34,8 @@ class _WoodSplineTerm(_WoodTerm):
     ) -> None:
         self.feature = int(feature)
         self.k = int(k)
+        if self.k < 3:
+            raise ValueError("n_splines (k) must be at least 3.")
         self.bs = bs.lower()
         self.select = bool(select)
         self.absorb_cons = bool(absorb_cons)
@@ -45,9 +47,20 @@ class _WoodSplineTerm(_WoodTerm):
             )
         if constraint == "periodic" and self.bs not in ("cc", "cp"):
             self.bs = "cc"
+        if sp is not None and float(sp) < 0:
+            raise ValueError("Smoothing parameter 'lam' / 'sp' must be non-negative.")
         self.sp = [float(sp)] if sp is not None else None
+        self._user_sp: Optional[List[Optional[float]]] = (
+            list(self.sp) if self.sp is not None else None
+        )
         self.m = m
         self.knots = knots
+        if by is not None and (
+            not isinstance(by, (int, np.integer))
+            or isinstance(by, bool)
+            or int(by) < 0
+        ):
+            raise ValueError("by must be a non-negative integer feature index.")
         self.by = int(by) if by is not None else None
         self._Z: Optional[np.ndarray] = None
         self._penalties: List[np.ndarray] = []
@@ -56,8 +69,20 @@ class _WoodSplineTerm(_WoodTerm):
         self._cached_X: Optional[np.ndarray] = None
         self.n_coefs = 0
 
+    def _extract_cols(self, x: np.ndarray) -> np.ndarray:
+        cols = [self.feature] + ([self.by] if self.by is not None else [])
+        return (
+            np.asarray(x[:, cols])
+            if self.bs == "re"
+            else np.asarray(x[:, cols], dtype=float)
+        )
+
     def compile(self, x: np.ndarray) -> None:
-        col = np.asarray(x[:, self.feature], dtype=float).ravel()
+        col = (
+            np.asarray(x[:, self.feature]).ravel()
+            if self.bs == "re"
+            else np.asarray(x[:, self.feature], dtype=float).ravel()
+        )
         X_raw, S_list, self._meta = build_smooth_basis(
             col, bs=self.bs, k=self.k, knots=self.knots, m=self.m
         )
@@ -82,14 +107,18 @@ class _WoodSplineTerm(_WoodTerm):
                 S_sh = es_vec @ (es_val[:, None] * es_vec.T)
                 self._penalties = [0.5 * (S_sh + S_sh.T)]
         self.n_coefs = X_abs.shape[1]
-        self._cached_cols = np.asarray(x[:, [self.feature] + ([self.by] if self.by is not None else [])], dtype=float)
+        self._cached_cols = self._extract_cols(x)
         self._cached_X = X_abs
 
     def build_columns(self, x: np.ndarray) -> np.ndarray:
-        col = np.asarray(x[:, self.feature], dtype=float).ravel()
+        col = (
+            np.asarray(x[:, self.feature]).ravel()
+            if self.bs == "re"
+            else np.asarray(x[:, self.feature], dtype=float).ravel()
+        )
         if self._Z is None:
             self.compile(x)
-        curr_cols = np.asarray(x[:, [self.feature] + ([self.by] if self.by is not None else [])], dtype=float)
+        curr_cols = self._extract_cols(x)
         if (
             self._cached_cols is not None
             and curr_cols.shape == self._cached_cols.shape
@@ -131,19 +160,47 @@ class _WoodTensorTerm(_WoodTerm):
                 "Tensor product term requires at least 2 features."
             )
 
-        self.k_per = (
-            [k] * self.d if isinstance(k, int) else [int(v) for v in k]
+        if isinstance(k, (int, np.integer)):
+            self.k_per = [int(k)] * self.d
+        else:
+            self.k_per = [int(v) for v in k]
+            if len(self.k_per) != self.d:
+                raise ValueError(
+                    f"k length ({len(self.k_per)}) must match number of features ({self.d})."
+                )
+        if any(v < 3 for v in self.k_per):
+            raise ValueError("n_splines (k) must be at least 3.")
+
+        if isinstance(bs, str):
+            self.bs_per = [bs.lower()] * self.d
+        else:
+            self.bs_per = [str(v).lower() for v in bs]
+            if len(self.bs_per) != self.d:
+                raise ValueError(
+                    f"bs length ({len(self.bs_per)}) must match number of features ({self.d})."
+                )
+
+        if sp is None:
+            self.sp = None
+        elif isinstance(sp, (int, float, np.number)):
+            self.sp = [float(sp)] * self.d
+        else:
+            self.sp = [float(v) if v is not None else None for v in sp]
+            if len(self.sp) != self.d:
+                raise ValueError(
+                    f"sp length ({len(self.sp)}) must match number of features ({self.d})."
+                )
+        if self.sp is not None and any(v is not None and v < 0 for v in self.sp):
+            raise ValueError("Smoothing parameter 'lam' / 'sp' must be non-negative.")
+        self._user_sp: Optional[List[Optional[float]]] = (
+            list(self.sp) if self.sp is not None else None
         )
-        self.bs_per = (
-            [bs] * self.d if isinstance(bs, str) else [str(v) for v in bs]
-        )
-        self.sp = (
-            None
-            if sp is None
-            else [float(sp)] * self.d
-            if isinstance(sp, (int, float))
-            else [float(v) for v in sp]
-        )
+        if by is not None and (
+            not isinstance(by, (int, np.integer))
+            or isinstance(by, bool)
+            or int(by) < 0
+        ):
+            raise ValueError("by must be a non-negative integer feature index.")
         self.by = int(by) if by is not None else None
         if m is None:
             self.m_per = [None] * self.d
@@ -262,15 +319,17 @@ def instantiate_wood_terms(
         feats = cfg["features"]
         kw = dict(cfg["kwargs"])
 
-        k_val = kw.pop("k", kw.pop("n_splines", 10))
+        default_k = 5 if kind in ("te", "ti") else 10
+        default_bs = "cr" if kind in ("te", "ti") else "tp"
+        k_val = kw.pop("k", kw.pop("n_splines", default_k))
         sp_val = kw.pop("sp", kw.pop("lam", None))
-        bs_val = kw.pop("bs", "tp")
+        bs_val = kw.pop("bs", default_bs)
         by_val = kw.pop("by", None)
 
         if select:
             if isinstance(bs_val, str):
                 bs_val = "ts" if bs_val == "tp" else ("cs" if bs_val == "cr" else bs_val)
-            elif isinstance(bs_val, list):
+            elif isinstance(bs_val, (list, tuple)):
                 bs_val = ["ts" if b == "tp" else ("cs" if b == "cr" else b) for b in bs_val]
 
         if kind == "s":
@@ -293,7 +352,6 @@ def instantiate_wood_terms(
                 )
             )
         elif kind in ("te", "ti"):
-            te_k = k_val if isinstance(k_val, (int, list)) else 5
             absorb = True
             if not has_dropped_cons and kind == "te" and by_val is None:
                 absorb = False
@@ -301,7 +359,7 @@ def instantiate_wood_terms(
             terms.append(
                 _WoodTensorTerm(
                     features=feats,
-                    k=te_k,
+                    k=k_val,
                     bs=bs_val,
                     sp=sp_val,
                     m=kw.pop("m", None),
@@ -312,9 +370,17 @@ def instantiate_wood_terms(
                 )
             )
         elif kind == "f":
+            coding = kw.pop("coding", "dummy")
+            if coding == "one-hot":
+                if has_dropped_cons:
+                    raise ValueError(
+                        "f(..., coding='one-hot') in the Wood backend is collinear with the intercept; "
+                        "use coding='dummy', fit_intercept=False, or s(..., bs='re')."
+                    )
+                has_dropped_cons = True
             terms.append(
                 _WoodFactorTerm(
-                    feature=feats[0], coding=kw.pop("coding", "dummy")
+                    feature=feats[0], coding=coding
                 )
             )
         elif kind == "l":

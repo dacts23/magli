@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 import numpy as np
 from numpy.typing import ArrayLike
 
+from .._base import _validate_xyw
 from ._gam import GAMCore
 from ._terms import _WoodSplineTerm
 
@@ -104,8 +105,14 @@ class LinGAM(GAMCore):
 
     @n_splines.setter
     def n_splines(self, val: int) -> None:
-        self._term.k = int(val)
-        self._term_configs[0]["kwargs"]["k"] = int(val)
+        val = int(val)
+        if val < 3:
+            raise ValueError("n_splines (k) must be at least 3.")
+        if val != self._term.k:
+            self.coef_ = None
+            self._term._Z = None
+        self._term.k = val
+        self._term_configs[0]["kwargs"]["k"] = val
 
     k = n_splines
 
@@ -115,7 +122,12 @@ class LinGAM(GAMCore):
 
     @lam.setter
     def lam(self, val: Optional[float]) -> None:
+        if val is not None and float(val) < 0:
+            raise ValueError("Smoothing parameter 'lam' / 'sp' must be non-negative.")
         self._term.sp = [float(val)] if val is not None else None
+        self._term._user_sp = (
+            list(self._term.sp) if self._term.sp is not None else None
+        )
         self._term_configs[0]["kwargs"]["sp"] = (
             float(val) if val is not None else None
         )
@@ -171,16 +183,15 @@ class LinGAM(GAMCore):
         self : LinGAM
             Fitted model instance.
         """
-        x_arr = np.asarray(x, dtype=float).ravel()
-        y_arr = np.asarray(y, dtype=float).ravel()
-        if not np.all(np.isfinite(x_arr)) or not np.all(np.isfinite(y_arr)):
-            raise ValueError("Input data contains NaN or infinity.")
-        self.edge_knots_ = np.array(
-            [float(np.min(x_arr)), float(np.max(x_arr))]
-        )
-        cfg_sp = self._term_configs[0]["kwargs"].get("sp")
-        self._term.sp = [float(cfg_sp)] if cfg_sp is not None else None
-        super().fit(x_arr.reshape(-1, 1), y_arr, weights=weights)
+        super().fit(x, y, weights=weights)
+        col = np.asarray(x).ravel()
+        try:
+            col_f = np.asarray(col, dtype=float)
+            self.edge_knots_ = np.array(
+                [float(np.min(col_f)), float(np.max(col_f))]
+            )
+        except (ValueError, TypeError):
+            self.edge_knots_ = None
         meta = self._term._meta
         xp = meta.get("xp") if meta.get("xp") is not None else meta.get("knots")
         if xp is None:
@@ -188,8 +199,12 @@ class LinGAM(GAMCore):
         self.knots_ = (
             np.asarray(xp)
             if xp is not None
-            else np.linspace(
-                self.edge_knots_[0], self.edge_knots_[1], self.n_splines
+            else (
+                np.linspace(
+                    self.edge_knots_[0], self.edge_knots_[1], self.n_splines
+                )
+                if self.edge_knots_ is not None
+                else None
             )
         )
         return self
@@ -225,8 +240,7 @@ class LinGAM(GAMCore):
         best_model : LinGAM
             Optimal fitted model.
         """
-        x_arr = np.asarray(x, dtype=float).ravel()
-        y_arr = np.asarray(y, dtype=float).ravel()
+        x_arr, y_arr, w_arr = _validate_xyw(x, y, weights)
         k_list = [
             int(v)
             for v in np.atleast_1d(
@@ -248,11 +262,12 @@ class LinGAM(GAMCore):
                     cand = LinGAM(
                         n_splines=k_cand,
                         lam=l_cand,
+                        constraint=self.constraint,
                         bs=self.bs,
                         method=self.method,
                         gamma=gamma,
                         spline_order=self.spline_order,
-                    ).fit(x_arr, y_arr, weights=weights)
+                    ).fit(x_arr, y_arr, weights=w_arr)
                     if cand.statistics_[crit_key] < best_score:
                         best_score = cand.statistics_[crit_key]
                         best_cand = cand
@@ -270,7 +285,7 @@ class LinGAM(GAMCore):
             self.knots_ = best_cand.knots_
             return self
 
-        return self.fit(x_arr, y_arr, weights=weights)
+        return self.fit(x_arr, y_arr, weights=w_arr)
 
     def plot_decomposition(
         self,

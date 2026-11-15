@@ -10,7 +10,7 @@ from scipy import linalg, optimize
 from ._tests import wood_re_test, wood_test_stat
 
 def _edf2_per_coef(
-    hess, H_inv, coef, sp, free, bounds, subs, RtR, Vp, scale, df_reml
+    hess, H_inv, coef, sp, free, bounds, subs, RtR, Vp, scale, df_reml, S_total
 ) -> np.ndarray:
     """mgcv's edf2: Vc = Vp + J V_rho J' + scale * Vb.corr, using the joint (rho, log phi) REML Hessian."""
     p, m = len(coef), len(free)
@@ -30,7 +30,7 @@ def _edf2_per_coef(
     V_rho = ((U[:m, pos] / d[pos]) @ U[:m, pos].T)
     Vr = (U[:m] / (np.where(pos, d, 0.0) + 0.1)) @ U[:m].T
 
-    Rc = np.linalg.cholesky(RtR + sum(S_full) + 1e-12 * np.eye(p)).T
+    Rc = np.linalg.cholesky(RtR + S_total + 1e-12 * np.eye(p)).T
     Ri = np.linalg.inv(Rc)
     dRi = []
     for S in S_full:
@@ -422,6 +422,11 @@ def fit_wood_engine(
 
     F_mat = H_inv_RtR
     edf1_per_coef = 2.0 * edf_per_coef - np.einsum("ij,ji->i", F_mat, F_mat)
+    S_final = np.zeros((p, p), dtype=float)
+    for (s0, s1), sub, l_val in zip(pen_bounds, pen_sub, best_sp):
+        if s1 > s0:
+            S_final[s0:s1, s0:s1] += l_val * sub
+
     edf2_per_coef = None
     if method == "REML" and free_indices:
         # Wood et al. (2016) smoothing-parameter-uncertainty correction, as in mgcv's edf2.
@@ -439,7 +444,7 @@ def fit_wood_engine(
         try:
             edf2_per_coef = _edf2_per_coef(
                 hess, best_H_inv, best_coef, best_sp, free_indices, pen_bounds,
-                pen_sub, RtR, Vp, scale_val, max(n - M_p, 1),
+                pen_sub, RtR, Vp, scale_val, max(n - M_p, 1), S_final,
             )
             if edf2_per_coef.sum() > edf1_per_coef.sum():
                 edf2_per_coef = edf1_per_coef
@@ -452,10 +457,6 @@ def fit_wood_engine(
 
     if coef_slices is not None:
         df2 = max(n - total_edf, 1.0)
-        S_final = np.zeros((p, p), dtype=float)
-        for (s0, s1), sub, l_val in zip(pen_bounds, pen_sub, best_sp):
-            if s1 > s0:
-                S_final[s0:s1, s0:s1] += l_val * sub
         is_re = [
             s1 > s0
             and sum(1 for b0, b1 in pen_bounds if b0 >= s0 and b1 <= s1 and b1 > b0) == 1

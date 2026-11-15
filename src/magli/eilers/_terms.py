@@ -55,6 +55,10 @@ class _SplineTerm(_Term):
                 f"Unknown constraint '{constraint}'. "
                 f"Choose from: {sorted(c for c in _CONSTRAINTS if c is not None)}."
             )
+        if spline_order < 1:
+            raise ValueError("spline_order must be >= 1.")
+        if lam < 0:
+            raise ValueError("Smoothing parameter 'lam' must be non-negative.")
         min_k = (2 * spline_order) if constraint == 'periodic' else (spline_order + 1)
         if n_splines < min_k:
             raise ValueError(
@@ -62,7 +66,7 @@ class _SplineTerm(_Term):
                 f"for spline_order ({spline_order})"
                 + (" with periodic constraint." if constraint == 'periodic' else ".")
             )
-        self.feature = feature
+        self.feature = int(feature)
         self.n_splines = n_splines
         self.lam = lam
         self.spline_order = spline_order
@@ -122,22 +126,29 @@ class _TensorTerm(_Term):
         lam: Union[float, List[float]] = 1.0,
         spline_order: int = 3,
     ) -> None:
-        self.features = list(features)
+        if spline_order < 1:
+            raise ValueError("spline_order must be >= 1.")
+        self.features = [int(f) for f in features]
         self.d = len(self.features)
         if self.d < 2:
             raise ValueError("Tensor term requires at least 2 features.")
 
-        if isinstance(n_splines, int):
-            self.n_splines_per = [n_splines] * self.d
+        if isinstance(n_splines, (int, np.integer)):
+            self.n_splines_per = [int(n_splines)] * self.d
         elif len(n_splines) != self.d:
             raise ValueError(
                 f"n_splines length ({len(n_splines)}) must match "
                 f"number of features ({self.d})."
             )
         else:
-            self.n_splines_per = list(n_splines)
+            self.n_splines_per = [int(v) for v in n_splines]
 
-        if isinstance(lam, (int, float)):
+        if any(k <= spline_order for k in self.n_splines_per):
+            raise ValueError(
+                f"n_splines ({self.n_splines_per}) must be greater than spline_order ({spline_order})."
+            )
+
+        if isinstance(lam, (int, float, np.number)):
             self.lam_per = [float(lam)] * self.d
         elif len(lam) != self.d:
             raise ValueError(
@@ -146,6 +157,9 @@ class _TensorTerm(_Term):
             )
         else:
             self.lam_per = [float(v) for v in lam]
+
+        if any(v < 0 for v in self.lam_per):
+            raise ValueError("Smoothing parameter 'lam' must be non-negative.")
 
         self.lam = self.lam_per[0]
         self.spline_order = spline_order
@@ -199,6 +213,12 @@ class _FactorTerm(_Term):
         lam: float = 1.0,
         coding: str = 'one-hot',
     ) -> None:
+        if coding not in ('one-hot', 'dummy'):
+            raise ValueError(
+                f"Unknown coding '{coding}'. Choose 'one-hot' or 'dummy'."
+            )
+        if lam < 0:
+            raise ValueError("Smoothing parameter 'lam' must be non-negative.")
         self.feature = int(feature)
         self.lam = lam
         self.coding = coding
@@ -213,7 +233,10 @@ class _FactorTerm(_Term):
             else len(self._levels) - 1
         )
         if self.n_coefs <= 0:
-            raise ValueError(f"Factor term feature {self.feature} has no levels.")
+            raise ValueError(
+                f"Factor term feature {self.feature} requires at least 2 levels "
+                f"for dummy coding (got {len(self._levels)})."
+            )
 
     def build_columns(self, x: np.ndarray) -> np.ndarray:
         if self._levels is None:
@@ -235,6 +258,8 @@ class _LinearTerm(_Term):
     __slots__ = ('feature', 'lam', 'n_coefs')
 
     def __init__(self, feature: int, lam: float = 0.0) -> None:
+        if lam < 0:
+            raise ValueError("Smoothing parameter 'lam' must be non-negative.")
         self.feature = int(feature)
         self.lam = lam
         self.n_coefs = 1

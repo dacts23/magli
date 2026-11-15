@@ -1,6 +1,17 @@
 Changelog
 =========
 
+Version 1.1.3
+-------------
+*Released 2026-11-14*
+
+* **Audit Fixes, Input Validation & Backend Consistency**:
+  - Validated non-negative integer feature indices in ``parse_formula()`` and consistent ``_validate_xyw()`` / ``_reshape_x()`` handling across ``fit()``, ``gridsearch()``, ``predict()``, ``partial_dependence()``, and ``plot_diagnostics()`` while preserving string factor/``re`` columns.
+  - Added ``edf_``, ``scale_``, and ``intercept_`` properties on ``_GAMBase``, removed mutable class-level defaults, validated interval ``width`` in ``(0, 1)``, routed ``bs='re'`` terms to discrete bar plots, and updated ``GAM``/``GAMCore`` docstrings and doctests.
+  - Hardened Eilers and Wood parameter validation (``k``/``n_splines``, ``lam``/``sp``, ``spline_order``, ``by``, ``coding``, tensor tuple lengths, and ``f(..., coding='one-hot')`` with ``fit_intercept=True``), synced ``_user_sp`` on Wood refits, and passed ``S_final`` into REML ``edf2`` calculation.
+  - Fixed Wood ``te()``/``ti()`` defaults (``k=5``, ``bs='cr'``), preserved ``constraint`` in ``WoodLinGAM.gridsearch()``, and cleared stale fitted state when mutating ``n_splines``.
+  - Updated ``pyproject.toml`` (``requires-python = ">=3.9"``, removed unused ``hypothesis`` test extra) and added regression coverage in ``tests/test_api_parity.py``.
+
 Version 1.1.2
 -------------
 *Released 2026-10-30*

@@ -559,8 +559,11 @@ def build_tp_basis(
 
 def predict_smooth_basis(x: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
     """Evaluate basis functions on new covariate values x using stored metadata."""
-    x = np.asarray(x, dtype=float).ravel()
     bs = meta["bs"]
+    if bs == "re":
+        x_re = np.asarray(x).ravel()
+        return (x_re[:, None] == meta["levels"][None, :]).astype(float)
+    x = np.asarray(x, dtype=float).ravel()
     if bs in ("tp", "ts"):
         shift = meta["shift"]
         X_smooth = _eta_1d((x - shift)[:, None] - meta["Xu"][None, :]) @ meta["UkZ"]
@@ -574,8 +577,6 @@ def predict_smooth_basis(x: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
         return _c_spline_des(x, meta["knots"], meta["ord"])
     if bs in ("ps", "bs", "b"):
         return _spline_design(meta["knots"], x, meta["ord"], outer_ok=True)
-    if bs == "re":
-        return (x[:, None] == meta["levels"][None, :]).astype(float)
     raise ValueError(f"Unknown basis type bs='{bs}' in predict_smooth_basis.")
 
 

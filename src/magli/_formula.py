@@ -103,6 +103,10 @@ def parse_formula(formula: str) -> List[Dict[str, Any]]:
                 f"'{func_name}()' accepts only 1 positional feature index (got {len(positional)}). "
                 f"Use keyword arguments (e.g. '{func_name}({positional[0]}, k={positional[1]})')."
             )
+        if not all(isinstance(p, int) and not isinstance(p, bool) and p >= 0 for p in positional):
+            raise ValueError(
+                f"Feature indices in '{func_name}()' must be non-negative integers, got {positional!r}."
+            )
         result.append(
             {
                 "type": func_name,

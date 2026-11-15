@@ -326,3 +326,141 @@ def test_audit_fixes_comprehensive():
     assert len(info_tp["Xu"]) == 2000
 
 
+def test_audit_regressions_fixed():
+    """Verify fixes for all bugs and validation gaps surfaced by the repo audit."""
+    from magli._formula import parse_formula
+
+    rng = np.random.default_rng(7)
+
+    # 1. String categorical f(0) works end-to-end across both backends
+    X_str = np.array(
+        [["ctrl", 0.1], ["treat", 0.5], ["ctrl", 0.2], ["treat", 0.6], ["treat", 0.7], ["ctrl", 0.3], ["ctrl", 0.4], ["treat", 0.8]],
+        dtype=object,
+    )
+    y_str = np.array([1.0, 3.0, 1.2, 2.9, 3.2, 1.1, 1.3, 3.1])
+    for backend in ("wood", "eilers"):
+        m = GAMCore("f(0) + s(1, k=4)", backend=backend).fit(X_str, y_str)
+        assert m.predict(X_str).shape == (len(y_str),)
+        assert m.confidence_intervals(X_str).shape == (len(y_str), 2)
+        assert m.prediction_intervals(X_str).shape == (len(y_str), 2)
+        assert m.partial_dependence(0, X_str).shape == (len(y_str),)
+        fig_d, _ = m.plot_decomposition(X_str, y_str)
+        plt.close(fig_d)
+        fig_g, _ = m.plot_diagnostics(X_str, y_str)
+        plt.close(fig_g)
+        m_gs = GAMCore("f(0) + s(1, k=4)", backend=backend)
+        if backend == "wood":
+            m_gs.gridsearch(X_str, y_str, n_splines=[4, 5])
+        else:
+            m_gs.gridsearch(X_str, y_str, lam=[0.1, 1.0])
+        assert m_gs.is_fitted and m_gs.predict(X_str).shape == (len(y_str),)
+
+    # 2. String group labels in s(0, bs='re') and bar-chart plot_decomposition
+    m_re = GAMCore("s(0, bs='re') + s(1, k=4)", backend="wood").fit(X_str, y_str)
+    assert m_re.predict(X_str).shape == (len(y_str),)
+    fig_re, axes_re = m_re.plot_decomposition(X_str, y_str)
+    assert len(axes_re[1].patches) == 2
+    plt.close(fig_re)
+
+    # 3. Re-fitting wood.GAMCore re-optimizes free smoothing parameters
+    X_refit = rng.uniform(0, 1, (80, 1))
+    y_noisy = np.sin(2 * np.pi * X_refit[:, 0]) + rng.normal(0, 0.5, 80)
+    y_clean = np.sin(2 * np.pi * X_refit[:, 0]) + rng.normal(0, 0.01, 80)
+    g_refit = GAMCore("s(0, k=10)", backend="wood").fit(X_refit, y_noisy)
+    sp_noisy = g_refit.statistics_["sp"][0]
+    g_refit.fit(X_refit, y_clean)
+    assert g_refit.statistics_["sp"][0] < sp_noisy * 0.05
+
+    # 4. te() defaults (k=5, bs='cr') and tuple k=(4, 6) in wood backend
+    g_te_def = GAMCore("te(0, 1)", backend="wood")
+    assert g_te_def._terms[0].k_per == [5, 5]
+    assert g_te_def._terms[0].bs_per == ["cr", "cr"]
+    g_te_tup = GAMCore("te(0, 1, k=(4, 6))", backend="wood")
+    assert g_te_tup._terms[0].k_per == [4, 6]
+
+    # 5. Invalid factor coding and wood one-hot intercept collinearity guard
+    for backend in ("wood", "eilers"):
+        with pytest.raises(ValueError, match="Unknown coding"):
+            GAMCore("f(0, coding='invalid')", backend=backend)
+    with pytest.raises(ValueError, match="collinear with the intercept"):
+        GAMCore("f(0, coding='one-hot')", backend="wood", fit_intercept=True)
+    m_oh = GAMCore("f(0, coding='one-hot')", backend="wood", fit_intercept=False).fit(X_str, y_str)
+    assert m_oh.is_fitted and np.all(m_oh.statistics_["se"] < 1.0)
+
+    # 6. k/sp constructor aliases and properties on eilers LinGAM
+    m_e = GAM(k=8, sp=0.5, backend="eilers")
+    assert isinstance(m_e, EilersLinGAM)
+    assert m_e.k == 8 and m_e.sp == 0.5
+    m_e.k = 9
+    m_e.sp = 0.25
+    assert m_e.n_splines == 9 and m_e.lam == 0.25
+
+    # 7. Documented fitted properties edf_, scale_, intercept_
+    x_1d = np.linspace(0, 1, 40)
+    y_1d = np.sin(2 * np.pi * x_1d) + rng.normal(0, 0.1, 40)
+    for backend in ("wood", "eilers"):
+        m_lin = LinGAM(n_splines=8, backend=backend).fit(x_1d, y_1d)
+        assert np.isclose(m_lin.edf_, m_lin.statistics_["edof"])
+        assert np.isclose(m_lin.scale_, m_lin.statistics_["scale"])
+        assert np.isclose(m_lin.intercept_, m_lin.coef_[-1])
+        m_no_int = GAMCore("s(0, k=8)", fit_intercept=False, backend=backend).fit(x_1d, y_1d)
+        assert m_no_int.intercept_ == 0.0
+
+    # 8. gridsearch validates NaN/inf and x/y length mismatch on both backends
+    x_bad = x_1d.copy()
+    x_bad[3] = np.nan
+    y_bad = y_1d.copy()
+    y_bad[3] = np.inf
+    for backend in ("wood", "eilers"):
+        with pytest.raises(ValueError, match="NaN or infinity"):
+            LinGAM(backend=backend).gridsearch(x_bad, y_1d)
+        with pytest.raises(ValueError, match="NaN or infinity"):
+            LinGAM(backend=backend).gridsearch(x_1d, y_bad)
+        with pytest.raises(ValueError, match="must match y length"):
+            LinGAM(backend=backend).gridsearch(x_1d[:10], y_1d)
+
+    # 9. Negative sp / lam rejected in GAMCore formulas on both backends
+    with pytest.raises(ValueError, match="non-negative"):
+        GAMCore("s(0, sp=-1.0)", backend="wood")
+    with pytest.raises(ValueError, match="non-negative"):
+        GAMCore("s(0, lam=-1.0)", backend="eilers")
+
+    # 10. Interval width validation
+    m_iv = LinGAM(k=6, backend="wood").fit(x_1d, y_1d)
+    for bad_w in (0.0, 1.0, 95.0, -0.5):
+        with pytest.raises(ValueError, match="width"):
+            m_iv.confidence_intervals(x_1d, width=bad_w)
+        with pytest.raises(ValueError, match="width"):
+            m_iv.prediction_intervals(x_1d, width=bad_w)
+
+    # 11. partial_dependence on 1D single-row input for te() and s(..., by=...)
+    X_2d = np.column_stack([x_1d, rng.uniform(0.2, 1.0, len(x_1d))])
+    y_2d = np.sin(2 * np.pi * X_2d[:, 0]) * X_2d[:, 1]
+    m_te_by = GAMCore("te(0, 1, k=4) + s(0, by=1, k=5)", backend="wood").fit(X_2d, y_2d)
+    assert m_te_by.partial_dependence(0, [0.5, 0.4]).shape == (1,)
+    assert m_te_by.partial_dependence(1, [0.5, 0.4]).shape == (1,)
+
+    # 12. parse_formula rejects non-integer or negative feature indices
+    for bad_formula in ("s(x0)", "s(-1)", "te(0, 'a')", "l(True)"):
+        with pytest.raises(ValueError, match="non-negative integers"):
+            parse_formula(bad_formula)
+
+    # 13. Mutating n_splines on fitted LinGAM resets fitted state and rejects < 3
+    for backend in ("wood", "eilers"):
+        m_mut = LinGAM(n_splines=8, backend=backend).fit(x_1d, y_1d)
+        assert m_mut.is_fitted
+        with pytest.raises(ValueError):
+            m_mut.n_splines = 2
+        m_mut.n_splines = 10
+        assert not m_mut.is_fitted
+
+    # 14. wood.GAMCore.gridsearch rejects unknown kwargs and invalid search_terms
+    g_err = GAMCore("s(0, k=6) + l(1)", backend="wood")
+    with pytest.raises(ValueError, match="Unrecognised kwargs"):
+        g_err.gridsearch(X_2d, y_2d, lam=[0.1, 1.0])
+    with pytest.raises(IndexError, match="out of range"):
+        g_err.gridsearch(X_2d, y_2d, search_terms=[5])
+    with pytest.raises(ValueError, match="Unknown term type"):
+        g_err.gridsearch(X_2d, y_2d, search_terms=["bad"])
+
+

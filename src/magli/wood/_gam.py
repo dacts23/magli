@@ -9,7 +9,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy import stats
 
-from .._base import _GAMBase, _validate_weights
+from .._base import _GAMBase, _validate_xyw
 from .._formula import parse_formula
 from ._optimizer import fit_wood_engine
 from ._terms import (
@@ -99,21 +99,7 @@ class GAMCore(_GAMBase):
         self : GAMCore
             Fitted model instance.
         """
-        x_arr = np.asarray(x)
-        if x_arr.ndim == 1:
-            x_arr = x_arr.reshape(-1, 1)
-        for col_idx in range(x_arr.shape[1]):
-            col = x_arr[:, col_idx]
-            try:
-                col_float = np.asarray(col, dtype=float)
-            except (ValueError, TypeError):
-                continue
-            if not np.all(np.isfinite(col_float)):
-                raise ValueError("Input data contains NaN or infinity.")
-        y_arr = np.asarray(y, dtype=float).ravel()
-        if not np.all(np.isfinite(y_arr)):
-            raise ValueError("Input data contains NaN or infinity.")
-        w_arr = _validate_weights(weights, len(y_arr))
+        x_arr, y_arr, w_arr = _validate_xyw(x, y, weights)
 
         self._compile(x_arr)
         self._compute_coef_slices()
@@ -129,7 +115,8 @@ class GAMCore(_GAMBase):
             start, end = self._coef_slices[i]
             pens = term.build_penalties()
             pen_counts.append(len(pens))
-            term_sps = term.sp if term.sp is not None else [None] * len(pens)
+            user_sp = getattr(term, "_user_sp", term.sp)
+            term_sps = user_sp if user_sp is not None else [None] * len(pens)
             for pen_idx, P_sub in enumerate(pens):
                 P_full = np.zeros((p, p), dtype=float)
                 P_full[start:end, start:end] = P_sub
@@ -199,14 +186,15 @@ class GAMCore(_GAMBase):
         **kwargs: Any,
     ) -> "GAMCore":
         """Search over candidate basis dimensions k for smooth terms via GCV."""
-        x_arr = np.asarray(x, dtype=float)
-        y_arr = np.asarray(y, dtype=float).ravel()
-        if x_arr.ndim == 1:
-            x_arr = x_arr.reshape(-1, 1)
-        w_arr = _validate_weights(weights, len(y_arr))
+        k_kw = kwargs.pop("k", None)
+        if kwargs:
+            raise ValueError(
+                f"Unrecognised kwargs for gridsearch(): {list(kwargs.keys())}"
+            )
+        x_arr, y_arr, w_arr = _validate_xyw(x, y, weights)
 
         if n_splines_grids is None:
-            n_splines_grids = n_splines if n_splines is not None else kwargs.get("k")
+            n_splines_grids = n_splines if n_splines is not None else k_kw
 
         all_smooth = [
             i
@@ -222,14 +210,30 @@ class GAMCore(_GAMBase):
             items = [search_terms] if isinstance(search_terms, (int, str)) else list(search_terms)
             allowed = set()
             for item in items:
-                if isinstance(item, int):
+                if isinstance(item, int) and not isinstance(item, bool):
+                    if item < 0 or item >= len(self._terms):
+                        raise IndexError(
+                            f"Term index {item} out of range (0..{len(self._terms) - 1})."
+                        )
                     allowed.add(item)
-                elif item == "all":
-                    allowed.update(all_smooth)
-                elif item == "s":
-                    allowed.update(i for i, t in enumerate(self._terms) if isinstance(t, _WoodSplineTerm))
-                elif item in ("te", "ti"):
-                    allowed.update(i for i, t in enumerate(self._terms) if isinstance(t, _WoodTensorTerm) and t.kind == item)
+                elif isinstance(item, str):
+                    kind_lower = item.lower()
+                    if kind_lower == "all":
+                        allowed.update(all_smooth)
+                    elif kind_lower == "s":
+                        allowed.update(i for i, t in enumerate(self._terms) if isinstance(t, _WoodSplineTerm))
+                    elif kind_lower in ("te", "ti"):
+                        allowed.update(i for i, t in enumerate(self._terms) if isinstance(t, _WoodTensorTerm) and t.kind == kind_lower)
+                    elif kind_lower in ("f", "l"):
+                        continue
+                    else:
+                        raise ValueError(
+                            f"Unknown term type '{item}'. Expected s, te, ti, f, l, or all."
+                        )
+                else:
+                    raise TypeError(
+                        f"Invalid search_terms element: {item!r}. Expected int or str."
+                    )
             smooth_indices = [i for i in all_smooth if i in allowed]
             if not smooth_indices:
                 return self.fit(x_arr, y_arr, weights=w_arr)

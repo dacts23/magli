@@ -4,7 +4,7 @@ from . import eilers, wood
 from .eilers import GAMCore as EilersGAMCore, LinGAM as EilersLinGAM
 from .wood import GAMCore as WoodGAMCore, LinGAM as WoodLinGAM
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 _BACKENDS = {
     "wood": (WoodLinGAM, WoodGAMCore),
@@ -106,8 +106,9 @@ class GAM:
     edf_ : float
         Effective degrees of freedom of the fitted model, :math:`\operatorname{tr}(F)`.
     statistics_ : dict
-        Diagnostic criteria dictionary containing `'reml'`, `'gcv'`, `'aic'`, `'bic'`,
-        `'deviance'`, and `'edfs'`.
+        Diagnostic criteria dictionary containing `'GCV'`, `'edof'`, `'edf_per_term'`,
+        `'rss'`, `'deviance_explained'`, `'r_sq_adj'`, `'scale'`, `'cov'`, `'se'`,
+        and `'score'` (Wood backend).
     is_fitted : bool
         True if the model has been fitted to data.
 
@@ -164,8 +165,8 @@ class GAM:
     >>> _ = model.fit(x, y)
     >>> model.is_fitted
     True
-    >>> np.round(model.edf_, 1)
-    5.6
+    >>> round(float(model.edf_), 1)
+    9.5
     >>> y_pred = model.predict(np.array([0.25, 0.75]))
     >>> np.allclose(y_pred, [1.0, -1.0], atol=0.25)
     True
@@ -231,7 +232,9 @@ class GAMCore:
     scale_ : float
         Estimated residual variance (Wood) or standard deviation (Eilers).
     statistics_ : dict
-        Model fit criteria including `'reml'`, `'gcv'`, `'aic'`, `'bic'`, and `'edfs'`.
+        Model fit criteria including `'GCV'`, `'edof'`, `'edf_per_term'`,
+        `'rss'`, `'deviance_explained'`, `'r_sq_adj'`, `'scale'`, `'cov'`, `'se'`,
+        and `'score'` (Wood backend).
     is_fitted : bool
         True if the model has been fitted to data.
 

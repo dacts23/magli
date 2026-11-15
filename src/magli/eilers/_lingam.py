@@ -34,11 +34,13 @@ class LinGAM(GAMCore):
         lam: float = 1.0,
         spline_order: int = 3,
         constraint: Optional[str] = None,
+        k: Optional[int] = None,
+        sp: Optional[float] = None,
     ) -> None:
-        if lam < 0:
-            raise ValueError("Smoothing parameter 'lam' must be non-negative.")
-        if spline_order < 1:
-            raise ValueError("spline_order must be >= 1.")
+        if k is not None:
+            n_splines = int(k)
+        if sp is not None:
+            lam = float(sp)
         super().__init__(
             f"s(0, n_splines={int(n_splines)}, lam={float(lam)}, constraint={constraint!r})",
             spline_order=int(spline_order),
@@ -56,6 +58,18 @@ class LinGAM(GAMCore):
     @n_splines.setter
     def n_splines(self, val: int) -> None:
         val = int(val)
+        min_k = (
+            (2 * self.spline_order)
+            if self.constraint == "periodic"
+            else (self.spline_order + 1)
+        )
+        if val < min_k:
+            raise ValueError(
+                f"n_splines ({val}) must be at least {min_k} "
+                f"for spline_order ({self.spline_order})."
+            )
+        if val != self._term.n_splines:
+            self.coef_ = None
         self._term.n_splines = val
         self._term.n_coefs = (
             val - self.spline_order
@@ -64,14 +78,21 @@ class LinGAM(GAMCore):
         )
         self._term_configs[0]["kwargs"]["n_splines"] = val
 
+    k = n_splines
+
     @property
     def lam(self) -> float:
         return self._term.lam
 
     @lam.setter
     def lam(self, val: float) -> None:
-        self._term.lam = float(val)
-        self._term_configs[0]["kwargs"]["lam"] = float(val)
+        val = float(val)
+        if val < 0:
+            raise ValueError("Smoothing parameter 'lam' must be non-negative.")
+        self._term.lam = val
+        self._term_configs[0]["kwargs"]["lam"] = val
+
+    sp = lam
 
     @property
     def constraint(self) -> Optional[str]:

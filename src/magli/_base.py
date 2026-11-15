@@ -27,6 +27,32 @@ def _validate_weights(
     return w
 
 
+def _validate_xyw(
+    x: ArrayLike, y: ArrayLike, weights: Optional[ArrayLike] = None
+) -> Tuple[np.ndarray, np.ndarray, Optional[np.ndarray]]:
+    """Validate x, y, and optional weights; preserve non-float (string factor) columns in x."""
+    x_arr = np.asarray(x)
+    if x_arr.ndim == 1:
+        x_arr = x_arr.reshape(-1, 1)
+    for col_idx in range(x_arr.shape[1]):
+        col = x_arr[:, col_idx]
+        try:
+            col_float = np.asarray(col, dtype=float)
+        except (ValueError, TypeError):
+            continue
+        if not np.all(np.isfinite(col_float)):
+            raise ValueError("Input data contains NaN or infinity.")
+    y_arr = np.asarray(y, dtype=float).ravel()
+    if not np.all(np.isfinite(y_arr)):
+        raise ValueError("Input data contains NaN or infinity.")
+    if len(x_arr) != len(y_arr):
+        raise ValueError(
+            f"x length ({len(x_arr)}) must match y length ({len(y_arr)})."
+        )
+    w_arr = _validate_weights(weights, len(y_arr))
+    return x_arr, y_arr, w_arr
+
+
 def _khatri_rao(marginals: List[np.ndarray]) -> np.ndarray:
     """Row-wise Kronecker (Khatri-Rao) product of marginal basis matrices."""
     n = marginals[0].shape[0]
@@ -75,8 +101,8 @@ class _GAMBase:
     _scale_is_var: bool = False
     formula: str = ""
     fit_intercept: bool = True
-    _terms: List[Any] = []
-    _coef_slices: List[Tuple[int, int]] = []
+    _terms: List[Any]
+    _coef_slices: List[Tuple[int, int]]
     coef_: Optional[np.ndarray] = None
     statistics_: Optional[Dict[str, Any]] = None
     _design_matrix_: Optional[np.ndarray] = None
@@ -89,11 +115,35 @@ class _GAMBase:
     def n_terms(self) -> int:
         return len(self._terms)
 
+    @property
+    def edf_(self) -> float:
+        self._check_fitted()
+        return float(self.statistics_["edof"])
+
+    @property
+    def scale_(self) -> float:
+        self._check_fitted()
+        return float(self.statistics_["scale"])
+
+    @property
+    def intercept_(self) -> float:
+        self._check_fitted()
+        return float(self.coef_[-1]) if self.fit_intercept else 0.0
+
     def _check_fitted(self) -> None:
         if not self.is_fitted:
             raise RuntimeError("Model not fitted. Call fit() or gridsearch() first.")
 
-    _check_is_fitted = _check_fitted
+    def _reshape_x(self, x: ArrayLike) -> np.ndarray:
+        x_arr = np.asarray(x)
+        n_feat = getattr(self, "n_features_in_", 1)
+        if x_arr.ndim == 0:
+            return x_arr.reshape(1, 1)
+        if x_arr.ndim == 1:
+            if n_feat > 1 and len(x_arr) == n_feat:
+                return x_arr.reshape(1, -1)
+            return x_arr.reshape(-1, 1)
+        return x_arr
 
     def _compile(self, x: np.ndarray) -> None:
         self.n_features_in_ = x.shape[1] if x.ndim > 1 else 1
@@ -186,15 +236,7 @@ class _GAMBase:
         (2,)
         """
         self._check_fitted()
-        x_arr = np.asarray(x, dtype=float)
-        n_feat = getattr(self, "n_features_in_", 1)
-        if x_arr.ndim == 0:
-            x_arr = x_arr.reshape(1, 1)
-        elif x_arr.ndim == 1:
-            if n_feat > 1 and len(x_arr) == n_feat:
-                x_arr = x_arr.reshape(1, -1)
-            else:
-                x_arr = x_arr.reshape(-1, 1)
+        x_arr = self._reshape_x(x)
 
         cov = self.statistics_.get("cov")
         if type == "terms":
@@ -278,18 +320,32 @@ class _GAMBase:
             raise IndexError(
                 f"term_idx {term_idx} out of range (0..{len(self._terms) - 1})."
             )
-        x_arr = np.asarray(x, dtype=float)
+        x_arr = np.asarray(x)
         if x_arr.ndim == 0:
             x_arr = x_arr.reshape(1)
         if x_arr.ndim == 1:
             term = self._terms[term_idx]
-            feat_idx = getattr(term, "feature", None)
-            if feat_idx is not None and feat_idx > 0:
-                mat = np.zeros((len(x_arr), feat_idx + 1), dtype=float)
-                mat[:, feat_idx] = x_arr
-                x_arr = mat
+            req_cols = list(
+                getattr(term, "features", [getattr(term, "feature", 0)])
+            )
+            if getattr(term, "by", None) is not None:
+                req_cols.append(term.by)
+            if len(req_cols) > 1:
+                n_feat = getattr(self, "n_features_in_", max(req_cols) + 1)
+                if len(x_arr) == n_feat:
+                    x_arr = x_arr.reshape(1, -1)
+                else:
+                    raise ValueError(
+                        f"Term {term_idx} requires columns {req_cols}; pass a 2D array x."
+                    )
             else:
-                x_arr = x_arr.reshape(-1, 1)
+                feat_idx = req_cols[0]
+                if feat_idx > 0:
+                    mat = np.zeros((len(x_arr), feat_idx + 1), dtype=x_arr.dtype)
+                    mat[:, feat_idx] = x_arr
+                    x_arr = mat
+                else:
+                    x_arr = x_arr.reshape(-1, 1)
         B_term = self._terms[term_idx].build_columns(x_arr)
         start, end = self._coef_slices[term_idx]
         contrib = B_term @ self.coef_[start:end]
@@ -353,7 +409,7 @@ class _GAMBase:
         >>> ci = model.confidence_intervals(np.array([0.5]), width=0.95)
         >>> ci.shape
         (1, 2)
-        >>> ci[0, 0] < ci[0, 1]
+        >>> bool(ci[0, 0] < ci[0, 1])
         True
         """
         return self._compute_intervals(x, width, prediction=False)
@@ -404,7 +460,7 @@ class _GAMBase:
         >>> model = mg.LinGAM(n_splines=6).fit(x, y)
         >>> pi = model.prediction_intervals(np.array([0.5]), width=0.95)
         >>> ci = model.confidence_intervals(np.array([0.5]), width=0.95)
-        >>> (pi[0, 1] - pi[0, 0]) > (ci[0, 1] - ci[0, 0])
+        >>> bool((pi[0, 1] - pi[0, 0]) > (ci[0, 1] - ci[0, 0]))
         True
         """
         return self._compute_intervals(x, width, prediction=True)
@@ -413,20 +469,10 @@ class _GAMBase:
         self, x: ArrayLike, width: float, prediction: bool
     ) -> np.ndarray:
         self._check_fitted()
-        x_arr = np.asarray(x, dtype=float)
-        n_feat = getattr(self, "n_features_in_", 1)
-        if x_arr.ndim == 0:
-            x_arr = x_arr.reshape(1, 1)
-        elif x_arr.ndim == 1:
-            if n_feat > 1 and len(x_arr) == n_feat:
-                x_arr = x_arr.reshape(1, -1)
-            else:
-                x_arr = x_arr.reshape(-1, 1)
-        X = self._build_model_matrix(x_arr)
-        lp = X @ self.coef_
-
-        cov = self.statistics_["cov"]
-        var = np.sum((X @ cov) * X, axis=1)
+        if not (0.0 < width < 1.0):
+            raise ValueError("width must be strictly between 0 and 1.")
+        lp, se_fit = self.predict(x, se_fit=True)
+        var = se_fit**2
         if prediction:
             s = self.statistics_["scale"]
             var = var + (s if self._scale_is_var else s**2)
@@ -766,7 +812,7 @@ class _GAMBase:
             ax = fig.add_subplot(gs[1 + i // n_term_cols, i % n_term_cols])
             tname = type(term).__name__
 
-            if "SplineTerm" in tname:
+            if "SplineTerm" in tname and getattr(term, "bs", None) != "re":
                 x_sweep = np.tile(medians, (n_grid, 1))
                 fv = feat_grids[term.feature]
                 x_sweep[:, term.feature] = fv
@@ -825,7 +871,7 @@ class _GAMBase:
                 else:
                     ax.set_title(f"{kind}({feats_str})")
 
-            elif "FactorTerm" in tname:
+            elif "FactorTerm" in tname or getattr(term, "bs", None) == "re":
                 unique_lvls = np.unique(np.asarray(x_arr[:, term.feature]).ravel())
                 contribs = []
                 for lvl in unique_lvls:
@@ -843,11 +889,12 @@ class _GAMBase:
                 ax.axhline(0, color="gray", ls="-", lw=0.5)
                 ax.set_xticks(range(len(contribs)))
                 ax.set_xticklabels(unique_lvls, fontsize=8)
-                title = (
-                    f"f({term.feature})"
-                    if self._scale_is_var
-                    else f"f({term.feature})   lam={term.lam:.3f}"
-                )
+                if getattr(term, "bs", None) == "re":
+                    title = f"s({term.feature}, bs='re')"
+                elif self._scale_is_var:
+                    title = f"f({term.feature})"
+                else:
+                    title = f"f({term.feature})   lam={term.lam:.3f}"
                 ax.set(ylabel="Contribution", title=title)
 
             elif "LinearTerm" in tname:
@@ -1005,10 +1052,8 @@ class _GAMBase:
         import matplotlib.pyplot as plt
 
         self._check_fitted()
-        x_arr = np.asarray(x, dtype=float)
+        x_arr = self._reshape_x(x)
         y_arr = np.asarray(y, dtype=float).ravel()
-        if x_arr.ndim == 1:
-            x_arr = x_arr.reshape(-1, 1)
 
         y_fit = self.predict(x_arr)
         residuals = y_arr - y_fit

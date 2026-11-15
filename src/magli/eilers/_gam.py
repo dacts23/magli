@@ -11,7 +11,7 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.linalg import block_diag, cho_factor, cho_solve
 
-from .._base import _GAMBase, _validate_weights
+from .._base import _GAMBase, _validate_xyw
 from .._formula import parse_formula
 from ..wood._tests import wood_test_stat
 from ._solver import solve_pirls
@@ -94,21 +94,7 @@ class GAMCore(_GAMBase):
         self : GAMCore
             Fitted model instance.
         """
-        x_arr = np.asarray(x)
-        if x_arr.ndim == 1:
-            x_arr = x_arr.reshape(-1, 1)
-        for col_idx in range(x_arr.shape[1]):
-            col = x_arr[:, col_idx]
-            try:
-                col_float = np.asarray(col, dtype=float)
-            except (ValueError, TypeError):
-                continue
-            if not np.all(np.isfinite(col_float)):
-                raise ValueError("Input data contains NaN or infinity.")
-        y_arr = np.asarray(y, dtype=float).ravel()
-        if not np.all(np.isfinite(y_arr)):
-            raise ValueError("Input data contains NaN or infinity.")
-        w_arr = _validate_weights(weights, len(y_arr))
+        x_arr, y_arr, w_arr = _validate_xyw(x, y, weights)
         self._compile(x_arr)
         self._fit_internal(x_arr, y_arr, weights=w_arr)
         return self
@@ -142,11 +128,12 @@ class GAMCore(_GAMBase):
             isinstance(t, _SplineTerm) and t.has_shape_constraint
             for t in self._terms
         ):
-            coef, U1, B_solve = _solve_constrained(
+            coef, U1, B_solve, P_eff = _solve_constrained(
                 X_w, y_w, P, self._terms, self._coef_slices, self.fit_intercept
             )
         else:
             coef, U1, B_solve = solve_pirls(X_w, y_w, P)
+            P_eff = P
 
         rss = float(np.sum((y_w - X_w @ coef) ** 2))
         self.coef_ = coef
@@ -157,21 +144,6 @@ class GAMCore(_GAMBase):
 
         scale = np.sqrt(rss / df_res)
         cov = (B_solve @ B_solve.T) * scale**2
-        if any(
-            isinstance(t, _SplineTerm) and t.has_shape_constraint
-            for t in self._terms
-        ):
-            c_blocks = [
-                t.build_constraint_penalty(coef[s:e])
-                if isinstance(t, _SplineTerm)
-                else np.zeros((t.n_coefs, t.n_coefs))
-                for t, (s, e) in zip(self._terms, self._coef_slices)
-            ]
-            if self.fit_intercept:
-                c_blocks.append(np.zeros((1, 1)))
-            P_eff = P + (c_blocks[0] if len(c_blocks) == 1 else block_diag(*c_blocks))
-        else:
-            P_eff = P
         Vp = np.linalg.pinv(X_w.T @ X_w + P_eff, rcond=1e-7) * scale**2
         edf1_per_coef = 2.0 * edof_per_coef - np.einsum("ij,ji->i", F_mat, F_mat)
         edf_per_term: List[float] = []
@@ -272,11 +244,7 @@ class GAMCore(_GAMBase):
                 f"Unrecognised kwargs for gridsearch(): {list(kwargs.keys())}"
             )
 
-        x_arr = np.asarray(x)
-        y_arr = np.asarray(y).ravel()
-        if x_arr.ndim == 1:
-            x_arr = x_arr.reshape(-1, 1)
-        w_arr = _validate_weights(weights, len(y_arr))
+        x_arr, y_arr, w_arr = _validate_xyw(x, y, weights)
 
         return self._gridsearch(
             x_arr,
@@ -423,31 +391,46 @@ class GAMCore(_GAMBase):
                     f"({self.formula})."
                 )
 
-            min_nsp = self.spline_order + 1
-            for i, grid in enumerate(n_splines_grids):
-                for v in np.atleast_1d(grid):
-                    if int(v) <= self.spline_order:
-                        raise ValueError(
-                            f"n_splines_grids[{i}] has value {int(v)}, "
-                            f"must be > spline_order ({self.spline_order}). "
-                            f"Use at least {min_nsp}."
-                        )
-
             nsp_idx = 0
             k_combo_elements: List[List] = []
             for t in self._terms:
                 if isinstance(t, _SplineTerm):
-                    k_combo_elements.append(
-                        [int(v) for v in np.atleast_1d(n_splines_grids[nsp_idx])]
+                    min_k = (
+                        (2 * t.spline_order)
+                        if getattr(t, "constraint", None) == "periodic"
+                        else (t.spline_order + 1)
                     )
+                    vals = [int(v) for v in np.atleast_1d(n_splines_grids[nsp_idx])]
+                    for v in vals:
+                        if v < min_k:
+                            raise ValueError(
+                                f"n_splines_grids[{nsp_idx}] has value {v}, "
+                                f"must be >= {min_k} for spline_order ({t.spline_order})"
+                                + (
+                                    " with periodic constraint."
+                                    if t.constraint == "periodic"
+                                    else "."
+                                )
+                            )
+                    k_combo_elements.append(vals)
                     nsp_idx += 1
                 elif isinstance(t, _TensorTerm):
-                    grids = [
-                        np.atleast_1d(g)
-                        for g in n_splines_grids[nsp_idx : nsp_idx + t.d]
-                    ]
+                    min_k = t.spline_order + 1
+                    grids = []
+                    for d_i in range(t.d):
+                        g_vals = [
+                            int(v)
+                            for v in np.atleast_1d(n_splines_grids[nsp_idx + d_i])
+                        ]
+                        for v in g_vals:
+                            if v < min_k:
+                                raise ValueError(
+                                    f"n_splines_grids[{nsp_idx + d_i}] has value {v}, "
+                                    f"must be >= {min_k} for spline_order ({t.spline_order})."
+                                )
+                        grids.append(g_vals)
                     k_combo_elements.append(
-                        [tuple(int(v) for v in c) for c in cartesian_product(*grids)]
+                        [tuple(v for v in c) for c in cartesian_product(*grids)]
                     )
                     nsp_idx += t.d
                 else:
@@ -598,7 +581,7 @@ class GAMCore(_GAMBase):
             for l_idx, l_combo in enumerate(lam_combos):
                 _assemble_penalty_from_bases(bases_list, l_combo, m, out=P_buf)
                 if has_shape:
-                    coef, U1, _ = _solve_constrained(
+                    coef, U1, _, _ = _solve_constrained(
                         X_k, y_w, P_buf, terms_k, slices_k, self.fit_intercept
                     )
                     edf = float(np.sum(U1**2))
@@ -682,7 +665,7 @@ def _solve_constrained(
     fit_intercept: bool,
     max_iter: int = 100,
     tol: float = 1e-4,
-) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     m = X_w.shape[1]
     coef = np.ones(m) * np.sqrt(np.finfo(float).eps)
     for _ in range(max_iter):
@@ -695,13 +678,14 @@ def _solve_constrained(
         if fit_intercept:
             blocks.append(np.zeros((1, 1)))
         C = blocks[0] if len(blocks) == 1 else block_diag(*blocks)
-        coef_new, U1, B_solve = solve_pirls(X_w, y_w, P + C)
+        P_eff = P + C
+        coef_new, U1, B_solve = solve_pirls(X_w, y_w, P_eff)
         if np.linalg.norm(coef - coef_new) < tol * min(
             1.0, max(float(np.linalg.norm(coef_new)), 1e-12)
         ):
-            return coef_new, U1, B_solve
+            return coef_new, U1, B_solve, P_eff
         coef = coef_new
-    return coef, U1, B_solve
+    return coef, U1, B_solve, P_eff
 
 
 def _set_lams_from_combo(terms: List[_Term], l_combo: tuple) -> None:
