@@ -22,6 +22,11 @@ from scipy.interpolate import BSpline
 from scipy.sparse.linalg import ArpackError, eigsh
 
 
+def _validate_strictly_increasing(xk: np.ndarray) -> None:
+    if len(xk) < 2 or not np.all(np.isfinite(xk)) or not np.all(np.diff(xk) > 0):
+        raise ValueError("knots must be finite and strictly increasing.")
+
+
 def _place_knots(x: np.ndarray, nk: int) -> np.ndarray:
     """R's place.knots: evenly spaced knot placement throughout unique x."""
     xu = np.sort(np.unique(x))
@@ -124,7 +129,8 @@ def build_cr_basis(
 ) -> Tuple[np.ndarray, List[np.ndarray], Dict]:
     """Cubic regression spline basis ('cr') or with shrinkage ('cs')."""
     x = np.asarray(x, dtype=float).ravel()
-    k = max(k, 3)
+    if k < 3:
+        raise ValueError(f"k must be at least 3 for bs='{'cs' if shrink else 'cr'}', got {k}.")
     if knots is None:
         xu = np.sort(np.unique(x))
         if len(xu) < k:
@@ -138,6 +144,7 @@ def build_cr_basis(
             raise ValueError(
                 f"Number of supplied knots ({len(xk)}) != k ({k}) for cr smooth."
             )
+        _validate_strictly_increasing(xk)
 
     F, S = _get_cr_FS(xk)
     X = _eval_cr_basis(x, xk, F)
@@ -179,17 +186,21 @@ def build_cc_basis(
 ) -> Tuple[np.ndarray, List[np.ndarray], Dict]:
     """Cyclic cubic regression spline ('cc') based on Lancaster & Salkauskas (1986)."""
     x = np.asarray(x, dtype=float).ravel()
-    k = max(k, 4)
+    if k < 4:
+        raise ValueError(f"k must be at least 4 for bs='cc', got {k}.")
     if knots is None:
         xk = _place_knots(x, k)
-    elif len(knots) == 2:
-        xk = _place_knots(np.concatenate([knots, x]), k)
     else:
-        xk = np.asarray(knots, dtype=float).ravel()
-        if len(xk) != k:
-            raise ValueError(
-                f"Number of supplied knots ({len(xk)}) != k ({k}) for cc smooth."
-            )
+        knots_arr = np.asarray(knots, dtype=float).ravel()
+        _validate_strictly_increasing(knots_arr)
+        if len(knots_arr) == 2:
+            xk = _place_knots(np.concatenate([knots_arr, x]), k)
+        else:
+            if len(knots_arr) != k:
+                raise ValueError(
+                    f"Number of supplied knots ({len(knots_arr)}) != k ({k}) for cc smooth."
+                )
+            xk = knots_arr
 
     h = np.diff(xk)
     n = len(xk) - 1
@@ -242,7 +253,6 @@ def _spline_design(
     knots: np.ndarray,
     x: np.ndarray,
     ord: int,
-    outer_ok: bool = False,
     extrapolate_linear: bool = False,
 ) -> np.ndarray:
     """Evaluate standard B-spline design matrix."""
@@ -268,7 +278,8 @@ def _spline_design(
                 out[m_lo] = sp(lo) + (x[m_lo, None] - lo) * dsp(lo)
             if np.any(m_hi):
                 out[m_hi] = sp(hi) + (x[m_hi, None] - hi) * dsp(hi)
-    np.nan_to_num(out, copy=False, nan=0.0)
+    else:
+        out[np.isfinite(x)[:, None] & np.isnan(out)] = 0.0
     return out
 
 
@@ -280,11 +291,11 @@ def _c_spline_des(x: np.ndarray, knots: np.ndarray, ord: int = 4) -> np.ndarray:
     x_w = _cwrap(k1, kmax, x)
     xc = knots[nk - ord]
     knots_ext = np.concatenate([k1 - (kmax - knots[nk - ord : nk - 1]), knots])
-    X = _spline_design(knots_ext, x_w, ord, outer_ok=True)
+    X = _spline_design(knots_ext, x_w, ord)
     ind = x_w > xc
     if np.any(ind):
         X[ind] += _spline_design(
-            knots_ext, x_w[ind] - kmax + k1, ord, outer_ok=True
+            knots_ext, x_w[ind] - kmax + k1, ord
         )
     return X
 
@@ -298,13 +309,20 @@ def build_ps_basis(
     """P-spline basis ('ps') following Eilers & Marx and Wood (2017)."""
     x = np.asarray(x, dtype=float).ravel()
     m_basis, m_pen = m
-    k = max(k, m_basis + 1)
+    min_k = m_basis + 2
+    if k < min_k:
+        raise ValueError(f"k must be at least {min_k} for bs='ps' with m={m}, got {k}.")
+    if m_pen >= k:
+        raise ValueError(f"Penalty order m[1] ({m_pen}) must be less than k ({k}) for bs='ps'.")
     nk_interior = k - m_basis
 
-    if knots is None or len(knots) == 2:
+    knots_arr = np.asarray(knots, dtype=float).ravel() if knots is not None else None
+    if knots_arr is not None:
+        _validate_strictly_increasing(knots_arr)
+    if knots_arr is None or len(knots_arr) == 2:
         xl, xu = (
-            (float(knots[0]), float(knots[1]))
-            if knots is not None and len(knots) == 2
+            (float(knots_arr[0]), float(knots_arr[1]))
+            if knots_arr is not None
             else (float(np.min(x)), float(np.max(x)))
         )
         xr = xu - xl
@@ -317,10 +335,15 @@ def build_ps_basis(
             nk_interior + 2 * m_basis + 2,
         )
     else:
-        knots_full = np.asarray(knots, dtype=float).ravel()
+        expected_knots = k + m_basis + 2
+        if len(knots_arr) != expected_knots:
+            raise ValueError(
+                f"Expected 2 boundary knots or {expected_knots} full knots for bs='ps' (k={k}, m={m}), got {len(knots_arr)}."
+            )
+        knots_full = knots_arr
 
     order = m_basis + 2
-    X = _spline_design(knots_full, x, order, outer_ok=True, extrapolate_linear=True)
+    X = _spline_design(knots_full, x, order, extrapolate_linear=True)
     D = np.diff(np.eye(k), n=m_pen, axis=0)
     S = D.T @ D
     S = 0.5 * (S + S.T)
@@ -348,20 +371,27 @@ def build_cp_basis(
     """Cyclic P-spline basis ('cp')."""
     x = np.asarray(x, dtype=float).ravel()
     m_basis, m_pen = m
-    k = max(k, m_basis, 4)
+    min_k = max(m_basis + 1, 4)
+    if k < min_k:
+        raise ValueError(f"k must be at least {min_k} for bs='cp', got {k}.")
+    if m_pen > k:
+        raise ValueError(f"Penalty order m[1] ({m_pen}) must be <= k ({k}) for bs='cp'.")
     nk = k + 1
 
-    if knots is None or len(knots) == 2:
+    knots_arr = np.asarray(knots, dtype=float).ravel() if knots is not None else None
+    if knots_arr is not None:
+        _validate_strictly_increasing(knots_arr)
+    if knots_arr is None or len(knots_arr) == 2:
         x0, x1 = (
-            (float(np.min(knots)), float(np.max(knots)))
-            if knots is not None and len(knots) == 2
+            (float(knots_arr[0]), float(knots_arr[1]))
+            if knots_arr is not None
             else (float(np.min(x)), float(np.max(x)))
         )
         knots_seq = np.linspace(x0, x1, nk)
     else:
-        knots_seq = np.asarray(knots, dtype=float).ravel()
-        if len(knots_seq) != nk:
+        if len(knots_arr) != nk:
             raise ValueError(f"there should be {nk} supplied knots")
+        knots_seq = knots_arr
 
     order = m_basis + 2
     X = _c_spline_des(x, knots_seq, ord=order)
@@ -398,13 +428,19 @@ def build_bs_basis(
     """B-spline basis ('bs') with integrated squared derivative penalty."""
     x = np.asarray(x, dtype=float).ravel()
     m1, m2 = m
-    k = max(k, m1 + 1)
+    if k < m1 + 1:
+        raise ValueError(f"k must be at least {m1 + 1} for bs='bs' with m={m}, got {k}.")
+    if m2 > m1:
+        raise ValueError(f"Penalty order m[1] ({m2}) must be <= spline degree m[0] ({m1}) for bs='bs'.")
     nk = k - m1 + 1
 
-    if knots is None or len(knots) == 2:
+    knots_arr = np.asarray(knots, dtype=float).ravel() if knots is not None else None
+    if knots_arr is not None:
+        _validate_strictly_increasing(knots_arr)
+    if knots_arr is None or len(knots_arr) == 2:
         xl, xu = (
-            (float(knots[0]), float(knots[1]))
-            if knots is not None and len(knots) == 2
+            (float(knots_arr[0]), float(knots_arr[1]))
+            if knots_arr is not None
             else (float(np.min(x)), float(np.max(x)))
         )
         xr = xu - xl
@@ -413,10 +449,15 @@ def build_bs_basis(
         dx = (xu - xl) / (nk - 1)
         knots_full = np.linspace(xl - dx * m1, xu + dx * m1, nk + 2 * m1)
     else:
-        knots_full = np.asarray(knots, dtype=float).ravel()
+        expected_knots = k + m1 + 1
+        if len(knots_arr) != expected_knots:
+            raise ValueError(
+                f"Expected 2 boundary knots or {expected_knots} full knots for bs='bs' (k={k}, m={m}), got {len(knots_arr)}."
+            )
+        knots_full = knots_arr
 
     order = m1 + 1
-    X = _spline_design(knots_full, x, order, outer_ok=True, extrapolate_linear=True)
+    X = _spline_design(knots_full, x, order, extrapolate_linear=True)
 
     k0 = knots_full[m1 : m1 + nk]
     h = np.diff(k0)
@@ -461,6 +502,23 @@ def _eta_1d(r: np.ndarray) -> np.ndarray:
     """Thin plate spline Green's function for d=1, m=2: eta(r) = (1/12) * |r|^3."""
     out = np.abs(r)
     out *= r * r * (1.0 / 12.0)
+    return out
+
+
+def _eta_1d_matmul(
+    x_c: np.ndarray, knots: np.ndarray, UkZ: np.ndarray, chunk: int = 2048
+) -> np.ndarray:
+    """Evaluate _eta_1d(x_c[:, None] - knots[None, :]) @ UkZ in row chunks to bound memory."""
+    n = len(x_c)
+    out = np.empty((n, UkZ.shape[1]), dtype=float)
+    for start in range(0, n, chunk):
+        end = min(start + chunk, n)
+        r = x_c[start:end, None] - knots[None, :]
+        eta = np.abs(r)
+        r *= r
+        eta *= r
+        eta *= 1.0 / 12.0
+        out[start:end] = eta @ UkZ
     return out
 
 
@@ -510,13 +568,13 @@ def _top_k_eig(E: np.ndarray, k: int) -> Tuple[np.ndarray, np.ndarray]:
 def build_tp_basis(
     x: np.ndarray,
     k: int = 10,
-    m: int = 2,
     shrink: bool = False,
 ) -> Tuple[np.ndarray, List[np.ndarray], Dict]:
     """Thin plate regression spline basis ('tp' / 'ts') following Wood (2003)."""
     x = np.asarray(x, dtype=float).ravel()
     M = 2
-    k = max(k, M + 1)
+    if k < M + 1:
+        raise ValueError(f"k must be at least {M + 1} for bs='{'ts' if shrink else 'tp'}', got {k}.")
 
     x_mean = float(np.mean(x))
     x_c = x - x_mean
@@ -536,7 +594,7 @@ def build_tp_basis(
         v_k, U_k = _top_k_eig(E, k)
         Q = _wood_qt(T.T @ U_k)
         UkZ = U_k @ Q[:, : k - M]
-        X_smooth = _eta_1d(x_c[:, None] - xk[None, :]) @ UkZ
+        X_smooth = _eta_1d_matmul(x_c, xk, UkZ)
         X = np.column_stack([X_smooth, np.ones(len(x_c)), x_c])
         knot_coords = xk
     else:
@@ -593,7 +651,7 @@ def predict_smooth_basis(x: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
     x = np.asarray(x, dtype=float).ravel()
     if bs in ("tp", "ts"):
         shift = meta["shift"]
-        X_smooth = _eta_1d((x - shift)[:, None] - meta["Xu"][None, :]) @ meta["UkZ"]
+        X_smooth = _eta_1d_matmul(x - shift, meta["Xu"], meta["UkZ"])
         T_new = np.column_stack([np.ones(len(x)), x - shift])
         return np.column_stack([X_smooth, T_new]) / meta["col_rms"][None, :]
     if bs in ("cr", "cs"):
@@ -604,7 +662,7 @@ def predict_smooth_basis(x: np.ndarray, meta: Dict[str, Any]) -> np.ndarray:
         return _c_spline_des(x, meta["knots"], meta["ord"])
     if bs in ("ps", "bs", "b"):
         return _spline_design(
-            meta["knots"], x, meta["ord"], outer_ok=True, extrapolate_linear=True
+            meta["knots"], x, meta["ord"], extrapolate_linear=True
         )
     raise ValueError(f"Unknown basis type bs='{bs}' in predict_smooth_basis.")
 
@@ -645,7 +703,7 @@ def build_smooth_basis(
                 f"m must be 2 (or omitted) for bs='{bs}': this thin plate "
                 "implementation uses a fixed 2nd-order penalty."
             )
-        return build_tp_basis(x, k=k, m=2, shrink=(bs == "ts"))
+        return build_tp_basis(x, k=k, shrink=(bs == "ts"))
     if bs in ("cr", "cs", "cc"):
         if m is not None:
             raise ValueError(f"m is not supported for bs='{bs}'.")

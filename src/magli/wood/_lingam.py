@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 from typing import Optional, Tuple
 
 import numpy as np
@@ -122,15 +123,16 @@ class LinGAM(GAMCore):
 
     @lam.setter
     def lam(self, val: Optional[float]) -> None:
-        if val is not None and float(val) < 0:
+        new_val = float(val) if val is not None else None
+        if new_val is not None and new_val < 0:
             raise ValueError("Smoothing parameter 'lam' / 'sp' must be non-negative.")
-        self._term.sp = [float(val)] if val is not None else None
+        if new_val != self.lam:
+            self.coef_ = None
+        self._term.sp = [new_val] if new_val is not None else None
         self._term._user_sp = (
             list(self._term.sp) if self._term.sp is not None else None
         )
-        self._term_configs[0]["kwargs"]["sp"] = (
-            float(val) if val is not None else None
-        )
+        self._term_configs[0]["kwargs"]["sp"] = new_val
 
     sp = lam
 
@@ -161,29 +163,7 @@ class LinGAM(GAMCore):
     def _diagnostics_title(self) -> str:
         return f"LinGAM Diagnostics (k={self.n_splines}, bs='{self.bs}', sp={self.lam:.4f})"
 
-    def fit(
-        self,
-        x: ArrayLike,
-        y: ArrayLike,
-        weights: Optional[ArrayLike] = None,
-    ) -> "LinGAM":
-        r"""Fit single-term GAM model using Simon Wood's REML or GCV criterion.
-
-        Parameters
-        ----------
-        x : array_like of shape (n_samples,) or (n_samples, 1)
-            Covariate values.
-        y : array_like of shape (n_samples,)
-            Response values.
-        weights : array_like of shape (n_samples,), optional
-            Non-negative prior observation weights :math:`w_i`. Default is None.
-
-        Returns
-        -------
-        self : LinGAM
-            Fitted model instance.
-        """
-        super().fit(x, y, weights=weights)
+    def _set_knots_attrs(self, x: ArrayLike) -> None:
         col = np.asarray(x).ravel()
         try:
             col_f = np.asarray(col, dtype=float)
@@ -207,6 +187,31 @@ class LinGAM(GAMCore):
                 else None
             )
         )
+
+    def fit(
+        self,
+        x: ArrayLike,
+        y: ArrayLike,
+        weights: Optional[ArrayLike] = None,
+    ) -> "LinGAM":
+        r"""Fit single-term GAM model using Simon Wood's REML or GCV criterion.
+
+        Parameters
+        ----------
+        x : array_like of shape (n_samples,) or (n_samples, 1)
+            Covariate values.
+        y : array_like of shape (n_samples,)
+            Response values.
+        weights : array_like of shape (n_samples,), optional
+            Non-negative prior observation weights :math:`w_i`. Default is None.
+
+        Returns
+        -------
+        self : LinGAM
+            Fitted model instance.
+        """
+        super().fit(x, y, weights=weights)
+        self._set_knots_attrs(x)
         return self
 
     def gridsearch(
@@ -215,7 +220,7 @@ class LinGAM(GAMCore):
         y: ArrayLike,
         n_splines: Optional[ArrayLike] = None,
         lam: Optional[ArrayLike] = None,
-        gamma: float = 1.0,
+        gamma: Optional[float] = None,
         weights: Optional[ArrayLike] = None,
     ) -> "LinGAM":
         r"""Select optimal basis dimension `k` (and optionally `lam`) via REML or GCV.
@@ -240,6 +245,9 @@ class LinGAM(GAMCore):
         best_model : LinGAM
             Optimal fitted model.
         """
+        gamma = self.gamma if gamma is None else float(gamma)
+        if not np.isfinite(gamma) or gamma <= 0.0:
+            raise ValueError("gamma must be finite and positive.")
         x_arr, y_arr, w_arr = _validate_xyw(x, y, weights)
         k_list = [
             int(v)
@@ -252,23 +260,45 @@ class LinGAM(GAMCore):
             if lam is None
             else [float(v) for v in np.atleast_1d(lam)]
         )
+        if not k_list or not lam_list:
+            raise ValueError("n_splines and lam grids must be non-empty.")
+        if any(v is not None and (not np.isfinite(v) or v < 0.0) for v in lam_list):
+            raise ValueError("Smoothing parameter 'lam' / 'sp' must be finite and non-negative.")
+
         crit_key = "GCV" if len(k_list) > 1 else "score"
         best_score = np.inf
         best_cand: Optional[LinGAM] = None
         last_err: Optional[Exception] = None
 
         for k_cand in k_list:
+            try:
+                cand_base = LinGAM(
+                    n_splines=k_cand,
+                    lam=None,
+                    constraint=self.constraint,
+                    bs=self.bs,
+                    method=self.method,
+                    gamma=gamma,
+                    spline_order=self.spline_order,
+                )
+                cand_base._compile(x_arr)
+            except (ValueError, np.linalg.LinAlgError) as exc:
+                last_err = exc
+                continue
+
             for l_cand in lam_list:
                 try:
-                    cand = LinGAM(
-                        n_splines=k_cand,
-                        lam=l_cand,
-                        constraint=self.constraint,
-                        bs=self.bs,
-                        method=self.method,
-                        gamma=gamma,
-                        spline_order=self.spline_order,
-                    ).fit(x_arr, y_arr, weights=w_arr)
+                    cand = copy.copy(cand_base)
+                    term_copy = copy.copy(cand_base._terms[0])
+                    cand._terms = [term_copy]
+                    cand._term_configs = [
+                        {
+                            **cand_base._term_configs[0],
+                            "kwargs": dict(cand_base._term_configs[0]["kwargs"]),
+                        }
+                    ]
+                    cand.lam = l_cand
+                    cand._fit_compiled(x_arr, y_arr, w_arr)
                     if cand.statistics_[crit_key] < best_score:
                         best_score = cand.statistics_[crit_key]
                         best_cand = cand
@@ -277,6 +307,9 @@ class LinGAM(GAMCore):
                     continue
 
         if best_cand is not None:
+            best_cand._set_knots_attrs(x_arr)
+            self.gamma = gamma
+            self.n_features_in_ = best_cand.n_features_in_
             self._term_configs = best_cand._term_configs
             self._terms = best_cand._terms
             self._coef_slices = best_cand._coef_slices
@@ -298,6 +331,10 @@ class LinGAM(GAMCore):
         show_weighted: bool = False,
     ) -> Tuple:
         """Plot basis decomposition, coefficients, and overall fit."""
+        if self.bs == "re":
+            return self._plot_gamcore_decomposition(
+                x, y, n_grid=n_grid, extrap_frac=0.0, figsize=figsize
+            )
         k_smooth = self._term.n_coefs
         fit_title = (
             "Weighted Basis Functions + Fit"

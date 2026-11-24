@@ -11,10 +11,10 @@ import numpy as np
 from numpy.typing import ArrayLike
 from scipy.linalg import block_diag, cho_factor, cho_solve
 
-from .._base import _GAMBase, _validate_xyw
+from .._base import _GAMBase, _fit_summary_stats, _validate_xyw
 from .._formula import parse_formula
 from ..wood._tests import wood_test_stat
-from ._solver import solve_pirls
+from ._solver import _pirls_factors
 from ._terms import (
     _FactorTerm,
     _LinearTerm,
@@ -115,36 +115,36 @@ class GAMCore(_GAMBase):
         if weights is not None:
             w_sqrt = np.sqrt(weights)
             X_w, y_w = X * w_sqrt[:, None], y * w_sqrt
-            null_deviance = float(
-                np.sum(weights * (y - np.average(y, weights=weights)) ** 2)
-            )
-            log_w_sum = float(np.sum(np.log(weights[weights > 0])))
         else:
             X_w, y_w = X, y
-            null_deviance = float(np.sum((y - np.mean(y)) ** 2))
-            log_w_sum = 0.0
 
+        Q, R = np.linalg.qr(X_w)
+        qty = Q.T @ y_w
         if any(
             isinstance(t, _SplineTerm) and t.has_shape_constraint
             for t in self._terms
         ):
-            coef, U1, B_solve, P_eff = _solve_constrained(
-                X_w, y_w, P, self._terms, self._coef_slices, self.fit_intercept
+            coef, _, B_q, V_inv = _solve_constrained(
+                R, qty, P, self._terms, self._coef_slices, self.fit_intercept
             )
         else:
-            coef, U1, B_solve = solve_pirls(X_w, y_w, P)
-            P_eff = P
+            _, B_q, V_inv = _pirls_factors(R, P)
+            coef = B_q @ qty
 
         rss = float(np.sum((y_w - X_w @ coef) ** 2))
         self.coef_ = coef
-        F_mat = B_solve @ X_w
+        F_mat = B_q @ R
         edof_per_coef = np.diag(F_mat)
         edof = float(np.sum(edof_per_coef))
-        df_res = max(n - edof, 1.0)
+
+        null_deviance, dev_explained, r_sq_adj, log_w_sum, n_obs = _fit_summary_stats(
+            y, X @ coef, weights, rss, edof
+        )
+        df_res = max(n_obs - edof, 1.0)
 
         scale = np.sqrt(rss / df_res)
-        cov = (B_solve @ B_solve.T) * scale**2
-        Vp = np.linalg.pinv(X_w.T @ X_w + P_eff, rcond=1e-7) * scale**2
+        cov = (B_q @ B_q.T) * scale**2
+        Vp = V_inv * scale**2
         edf1_per_coef = 2.0 * edof_per_coef - np.einsum("ij,ji->i", F_mat, F_mat)
         edf_per_term: List[float] = []
         ref_df_per_term: List[float] = []
@@ -155,12 +155,12 @@ class GAMCore(_GAMBase):
             q = s1 - s0
             if isinstance(t, (_SplineTerm, _TensorTerm)) and self.fit_intercept:
                 if weights is not None:
-                    Xc = X_w[:, s0:s1] - np.outer(
-                        w_sqrt, (w_sqrt @ X_w[:, s0:s1]) / w_sum
-                    )
+                    mean_row = (w_sqrt @ X_w[:, s0:s1])[None, :] / w_sum
+                    Xc = X_w[:, s0:s1] - np.outer(w_sqrt, mean_row[0])
                 else:
-                    Xc = X_w[:, s0:s1] - X_w[:, s0:s1].mean(axis=0, keepdims=True)
-                B_Xc = B_solve @ Xc
+                    mean_row = X_w[:, s0:s1].mean(axis=0, keepdims=True)
+                    Xc = X_w[:, s0:s1] - mean_row
+                B_Xc = F_mat[:, s0:s1] - F_mat[:, -1:] @ mean_row
                 term_edf = float(np.trace(B_Xc[s0:s1]))
                 rank = min(
                     float(q),
@@ -168,7 +168,11 @@ class GAMCore(_GAMBase):
                 )
             else:
                 Xc = X_w[:, s0:s1]
-                is_unpen = isinstance(t, _LinearTerm) or getattr(t, "lam", 0.0) == 0.0
+                is_unpen = (
+                    all(v == 0.0 for v in t.lam_per)
+                    if isinstance(t, _TensorTerm)
+                    else getattr(t, "lam", 0.0) == 0.0
+                )
                 term_edf = float(q) if is_unpen else float(np.sum(edof_per_coef[s0:s1]))
                 rank = (
                     float(q)
@@ -177,29 +181,18 @@ class GAMCore(_GAMBase):
                 )
             edf_per_term.append(term_edf)
             try:
-                stat, pval, rank = wood_test_stat(
-                    coef[s0:s1], Xc, Vp[s0:s1, s0:s1], rank, df_res
-                )
-                stat /= rank
-            except Exception:
+                if rank <= 0.0:
+                    stat, pval, rank = 0.0, 1.0, float(q)
+                else:
+                    stat, pval, rank = wood_test_stat(
+                        coef[s0:s1], Xc, Vp[s0:s1, s0:s1], rank, df_res
+                    )
+                    stat = stat / rank if rank > 0.0 else 0.0
+            except np.linalg.LinAlgError:
                 stat, pval, rank = 0.0, 1.0, float(q)
             f_stat_per_term.append(stat)
             p_values_per_term.append(pval)
             ref_df_per_term.append(rank)
-
-        dev_explained = max(0.0, 1.0 - rss / max(null_deviance, 1e-12))
-        y0_w = (
-            (y - np.average(y, weights=weights)) * w_sqrt
-            if weights is not None
-            else y - np.mean(y)
-        )
-        res_w = y_w - X_w @ coef
-        var_y0 = float(np.var(y0_w))
-        r_sq_adj = (
-            1.0 - (float(np.var(res_w)) * (n - 1)) / (var_y0 * df_res)
-            if var_y0 > 0.0
-            else 0.0
-        )
 
         self.statistics_ = {
             "edof": edof,
@@ -217,8 +210,8 @@ class GAMCore(_GAMBase):
             "null_deviance": null_deviance,
             "deviance_explained": dev_explained,
             "r_sq_adj": r_sq_adj,
-            "n_samples": n,
-            "GCV": (n * rss) / max(n - gamma * edof, 1) ** 2,
+            "n_samples": n_obs,
+            "GCV": (n_obs * rss) / max(n_obs - gamma * edof, 1) ** 2,
             "log_weights_sum": log_w_sum,
         }
 
@@ -243,6 +236,9 @@ class GAMCore(_GAMBase):
             raise ValueError(
                 f"Unrecognised kwargs for gridsearch(): {list(kwargs.keys())}"
             )
+        gamma = float(gamma)
+        if not np.isfinite(gamma) or gamma <= 0.0:
+            raise ValueError("gamma must be finite and positive.")
 
         x_arr, y_arr, w_arr = _validate_xyw(x, y, weights)
 
@@ -261,48 +257,10 @@ class GAMCore(_GAMBase):
         self,
         search_terms: Optional[Union[List[Union[int, str]], str]],
     ) -> Set[int]:
-        if search_terms is None:
-            penalised = {
-                i
-                for i, t in enumerate(self._terms)
-                if not isinstance(t, _LinearTerm)
-            }
-            return penalised if penalised else set(range(len(self._terms)))
-        if isinstance(search_terms, str):
-            if search_terms == "all":
-                return set(range(len(self._terms)))
-            return self._indices_for_type(search_terms)
-
-        indices: Set[int] = set()
-        for item in search_terms:
-            if isinstance(item, int):
-                if item < 0 or item >= len(self._terms):
-                    raise IndexError(
-                        f"Term index {item} out of range (0..{len(self._terms) - 1})."
-                    )
-                indices.add(item)
-            elif isinstance(item, str):
-                indices.update(self._indices_for_type(item))
-            else:
-                raise TypeError(
-                    f"Invalid search_terms element: {item!r}. Expected int or str."
-                )
-        return indices
-
-    def _indices_for_type(self, kind: str) -> Set[int]:
-        type_map = {
-            "s": _SplineTerm,
-            "te": _TensorTerm,
-            "f": _FactorTerm,
-            "l": _LinearTerm,
-        }
-        kind_lower = kind.lower()
-        if kind_lower not in type_map:
-            raise ValueError(
-                f"Unknown term type '{kind}'. Expected s, te, f, or l."
-            )
-        cls = type_map[kind_lower]
-        return {i for i, t in enumerate(self._terms) if isinstance(t, cls)}
+        penalised = [i for i, t in enumerate(self._terms) if not isinstance(t, _LinearTerm)]
+        defaults = penalised if penalised else list(range(len(self._terms)))
+        type_map = {"s": _SplineTerm, "te": _TensorTerm, "f": _FactorTerm, "l": _LinearTerm}
+        return set(self._parse_search_terms(search_terms, type_map, defaults))
 
     def _expand_partial_grids(
         self,
@@ -371,9 +329,13 @@ class GAMCore(_GAMBase):
                 if i in search_idx and isinstance(t, (_SplineTerm, _TensorTerm))
             )
 
-            if isinstance(n_splines_grids, list) and len(n_splines_grids) == 0:
+            if isinstance(n_splines_grids, np.ndarray) and n_splines_grids.size == 0:
                 raise ValueError("n_splines_grids must not be empty.")
-            is_nested_nsp = isinstance(n_splines_grids, list) and any(
+            if isinstance(n_splines_grids, (list, tuple)) and len(n_splines_grids) == 0:
+                raise ValueError("n_splines_grids must not be empty.")
+            if isinstance(n_splines_grids, np.ndarray) and n_splines_grids.ndim == 2:
+                n_splines_grids = [row for row in n_splines_grids]
+            is_nested_nsp = isinstance(n_splines_grids, (list, tuple)) and any(
                 isinstance(v, (list, tuple, np.ndarray)) for v in n_splines_grids
             )
             if not is_nested_nsp:
@@ -392,7 +354,7 @@ class GAMCore(_GAMBase):
                     n_splines_grids, search_idx, "nsp"
                 )
             elif len(n_splines_grids) == 1 and n_nsp_slots > 1:
-                n_splines_grids = n_splines_grids * n_nsp_slots
+                n_splines_grids = list(n_splines_grids) * n_nsp_slots
             elif len(n_splines_grids) != n_nsp_slots:
                 raise ValueError(
                     f"n_splines_grids has {len(n_splines_grids)} elements, "
@@ -402,51 +364,61 @@ class GAMCore(_GAMBase):
 
             nsp_idx = 0
             k_combo_elements: List[List] = []
-            for t in self._terms:
+            for ti, t in enumerate(self._terms):
                 if isinstance(t, _SplineTerm):
-                    min_k = (
-                        (2 * t.spline_order)
-                        if getattr(t, "constraint", None) == "periodic"
-                        else (t.spline_order + 1)
-                    )
-                    vals = [int(v) for v in np.atleast_1d(n_splines_grids[nsp_idx])]
-                    for v in vals:
-                        if v < min_k:
-                            raise ValueError(
-                                f"n_splines_grids[{nsp_idx}] has value {v}, "
-                                f"must be >= {min_k} for spline_order ({t.spline_order})"
-                                + (
-                                    " with periodic constraint."
-                                    if t.constraint == "periodic"
-                                    else "."
-                                )
-                            )
-                    k_combo_elements.append(vals)
-                    nsp_idx += 1
-                elif isinstance(t, _TensorTerm):
-                    grids = []
-                    for d_i in range(t.d):
-                        deg_i = t.spline_order_per[d_i]
-                        min_k = deg_i + 1
-                        g_vals = [
-                            int(v)
-                            for v in np.atleast_1d(n_splines_grids[nsp_idx + d_i])
-                        ]
-                        for v in g_vals:
+                    if ti in search_idx:
+                        min_k = (
+                            (2 * t.spline_order)
+                            if getattr(t, "constraint", None) == "periodic"
+                            else (t.spline_order + 1)
+                        )
+                        vals = [int(v) for v in np.atleast_1d(n_splines_grids[nsp_idx])]
+                        if not vals:
+                            raise ValueError("n_splines_grids entries must not be empty.")
+                        for v in vals:
                             if v < min_k:
                                 raise ValueError(
-                                    f"n_splines_grids[{nsp_idx + d_i}] has value {v}, "
-                                    f"must be >= {min_k} for spline_order ({deg_i})."
+                                    f"n_splines_grids[{nsp_idx}] has value {v}, "
+                                    f"must be >= {min_k} for spline_order ({t.spline_order})"
+                                    + (
+                                        " with periodic constraint."
+                                        if t.constraint == "periodic"
+                                        else "."
+                                    )
                                 )
-                        grids.append(g_vals)
-                    k_combo_elements.append(
-                        [tuple(v for v in c) for c in cartesian_product(*grids)]
-                    )
+                        k_combo_elements.append(vals)
+                    else:
+                        k_combo_elements.append([int(t.n_splines)])
+                    nsp_idx += 1
+                elif isinstance(t, _TensorTerm):
+                    if ti in search_idx:
+                        grids = []
+                        for d_i in range(t.d):
+                            deg_i = t.spline_order_per[d_i]
+                            min_k = deg_i + 1
+                            g_vals = [
+                                int(v)
+                                for v in np.atleast_1d(n_splines_grids[nsp_idx + d_i])
+                            ]
+                            if not g_vals:
+                                raise ValueError("n_splines_grids entries must not be empty.")
+                            for v in g_vals:
+                                if v < min_k:
+                                    raise ValueError(
+                                        f"n_splines_grids[{nsp_idx + d_i}] has value {v}, "
+                                        f"must be >= {min_k} for spline_order ({deg_i})."
+                                    )
+                            grids.append(g_vals)
+                        k_combo_elements.append(
+                            [tuple(v for v in c) for c in cartesian_product(*grids)]
+                        )
+                    else:
+                        k_combo_elements.append([tuple(int(k) for k in t.n_splines_per)])
                     nsp_idx += t.d
                 else:
                     k_combo_elements.append([None])
 
-            all_k_combos = list(cartesian_product(*k_combo_elements))
+            all_k_combos = list(dict.fromkeys(cartesian_product(*k_combo_elements)))
 
         slot_term_map: List[Tuple[int, int]] = []
         default_fixed: List[float] = []
@@ -467,9 +439,11 @@ class GAMCore(_GAMBase):
         if lam_grids is None:
             lam_grids = np.logspace(-3, 3, 11)
 
-        if isinstance(lam_grids, list) and len(lam_grids) == 0:
+        if (isinstance(lam_grids, np.ndarray) and lam_grids.size == 0) or (
+            isinstance(lam_grids, (list, tuple)) and len(lam_grids) == 0
+        ):
             raise ValueError("lam_grids must not be empty.")
-        is_nested_lam = isinstance(lam_grids, list) and any(
+        is_nested_lam = isinstance(lam_grids, (list, tuple)) and any(
             isinstance(v, (list, tuple, np.ndarray)) for v in lam_grids
         )
 
@@ -521,6 +495,11 @@ class GAMCore(_GAMBase):
                     combo[si] = float(val)
                 lam_combos.append(tuple(combo))
 
+        if not lam_combos:
+            raise ValueError("lam_grids must not be empty.")
+        if any(not np.isfinite(v) or v < 0.0 for combo in lam_combos for v in combo):
+            raise ValueError("Smoothing parameter 'lam' must be finite and non-negative.")
+
         self._compile(x)
         return all_k_combos, lam_combos
 
@@ -538,7 +517,7 @@ class GAMCore(_GAMBase):
         all_k_combos, lam_combos = self._build_combos(
             x, lam, n_splines, search_terms
         )
-        n = len(y)
+        n_obs = int(np.sum(weights > 0)) if weights is not None else len(y)
         w_sqrt = np.sqrt(weights) if weights is not None else None
         y_w = y * w_sqrt if w_sqrt is not None else y
         yty = float(np.dot(y_w, y_w))
@@ -570,7 +549,7 @@ class GAMCore(_GAMBase):
             bases_list, m = _precompute_penalty_bases(
                 terms_copy, self.fit_intercept
             )
-            return R, RtR, Rt_qty, qty, ss_orth, bases_list, m, terms_copy, X_k
+            return R, RtR, Rt_qty, qty, ss_orth, bases_list, m, terms_copy
 
         n_k = len(all_k_combos)
         workers = os.cpu_count() or 4 if n_jobs == -1 else max(1, int(n_jobs))
@@ -580,8 +559,8 @@ class GAMCore(_GAMBase):
         else:
             precomputed = [_precompute_k(c) for c in all_k_combos]
 
-        def _eval_k_combo(k_idx):
-            R, RtR, Rt_qty, qty, ss_orth, bases_list, m, terms_k, X_k = (
+        def _eval_k_combo(k_idx, lam_items=None):
+            R, RtR, Rt_qty, qty, ss_orth, bases_list, m, terms_k = (
                 precomputed[k_idx]
             )
             has_shape = any(
@@ -594,14 +573,14 @@ class GAMCore(_GAMBase):
             best_gcv_k = np.inf
             best_l_idx = 0
 
-            for l_idx, l_combo in enumerate(lam_combos):
+            items = enumerate(lam_combos) if lam_items is None else lam_items
+            for l_idx, l_combo in items:
                 _assemble_penalty_from_bases(bases_list, l_combo, m, out=P_buf)
                 if has_shape:
                     coef, U1, _, _ = _solve_constrained(
-                        X_k, y_w, P_buf, terms_k, slices_k, self.fit_intercept
+                        R, qty, P_buf, terms_k, slices_k, self.fit_intercept
                     )
                     edf = float(np.sum(U1**2))
-                    rss = float(np.sum((y_w - X_k @ coef) ** 2))
                 else:
                     np.add(RtR, P_buf, out=B_buf)
                     B_buf.flat[:: m + 1] += 1e-8
@@ -630,10 +609,10 @@ class GAMCore(_GAMBase):
                                 np.linalg.pinv(B_fallback, rcond=1e-10) @ RtR
                             )
                         )
-                    r_diff = qty - R @ coef
-                    rss = max(0.0, ss_orth + float(np.dot(r_diff, r_diff)))
+                r_diff = qty - R @ coef
+                rss = max(0.0, ss_orth + float(np.dot(r_diff, r_diff)))
 
-                gcv = (n * rss) / max(n - gamma * edf, 1) ** 2
+                gcv = (n_obs * rss) / max(n_obs - gamma * edf, 1) ** 2
                 if gcv < best_gcv_k:
                     best_gcv_k = gcv
                     best_l_idx = l_idx
@@ -643,11 +622,17 @@ class GAMCore(_GAMBase):
         if n_jobs != 1 and n_k > 1:
             with ThreadPoolExecutor(max_workers=min(workers, n_k)) as ex:
                 k_results = list(ex.map(_eval_k_combo, range(n_k)))
+        elif n_jobs != 1 and len(lam_combos) > 1:
+            n_chunks = min(workers, len(lam_combos))
+            all_items = list(enumerate(lam_combos))
+            chunks = [all_items[i::n_chunks] for i in range(n_chunks)]
+            with ThreadPoolExecutor(max_workers=n_chunks) as ex:
+                k_results = list(ex.map(lambda ch: _eval_k_combo(0, ch), chunks))
         else:
             k_results = [_eval_k_combo(i) for i in range(n_k)]
 
         _, best_k_idx, best_l_idx = min(k_results, key=lambda r: r[0])
-        self._terms = precomputed[best_k_idx][-2]
+        self._terms = precomputed[best_k_idx][-1]
         _set_lams_from_combo(self._terms, lam_combos[best_l_idx])
         self._compile(x)
         self._fit_internal(x, y, weights=weights, gamma=gamma)
@@ -673,8 +658,8 @@ class GAMCore(_GAMBase):
 
 
 def _solve_constrained(
-    X_w: np.ndarray,
-    y_w: np.ndarray,
+    R: np.ndarray,
+    qty: np.ndarray,
     P: np.ndarray,
     terms: List[_Term],
     coef_slices: List[Tuple[int, int]],
@@ -682,7 +667,7 @@ def _solve_constrained(
     max_iter: int = 100,
     tol: float = 1e-4,
 ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    m = X_w.shape[1]
+    m = R.shape[1]
     coef = np.ones(m) * np.sqrt(np.finfo(float).eps)
     for _ in range(max_iter):
         blocks = [
@@ -695,20 +680,22 @@ def _solve_constrained(
             blocks.append(np.zeros((1, 1)))
         C = blocks[0] if len(blocks) == 1 else block_diag(*blocks)
         P_eff = P + C
-        coef_new, U1, B_solve = solve_pirls(X_w, y_w, P_eff)
+        U1, B_q, V_inv = _pirls_factors(R, P_eff)
+        coef_new = B_q @ qty
         if np.linalg.norm(coef - coef_new) < tol * min(
             1.0, max(float(np.linalg.norm(coef_new)), 1e-12)
         ):
-            return coef_new, U1, B_solve, P_eff
+            return coef_new, U1, B_q, V_inv
         coef = coef_new
-    return coef, U1, B_solve, P_eff
+    return coef, U1, B_q, V_inv
 
 
 def _set_lams_from_combo(terms: List[_Term], l_combo: tuple) -> None:
     lam_idx = 0
     for t in terms:
         if isinstance(t, _TensorTerm):
-            t.lam_per = list(l_combo[lam_idx : lam_idx + t.d])
+            t.lam_per = [float(v) for v in l_combo[lam_idx : lam_idx + t.d]]
+            t.lam = t.lam_per[0]
             lam_idx += t.d
         else:
             t.lam = float(l_combo[lam_idx])

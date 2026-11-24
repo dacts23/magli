@@ -4,7 +4,7 @@ from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from .._base import _khatri_rao, _kron_sum
+from .._base import _khatri_rao, _kron_blocks, _kron_sum
 from ._bspline import b_spline_basis
 from ._penalty import (
     circular_second_diff_penalty,
@@ -23,7 +23,6 @@ class _Term:
     """Base class for all GAM terms."""
 
     n_coefs: int = 0
-    sp: Optional[List[float]] = None
 
     def compile(self, x: np.ndarray) -> None:
         """One-time setup using training data."""
@@ -204,14 +203,8 @@ class _TensorTerm(_Term):
         ])
 
     def penalty_bases(self) -> List[Tuple[np.ndarray, int]]:
-        sizes = list(self.n_splines_per)
-        bases: List[Tuple[np.ndarray, int]] = []
-        for i, sz in enumerate(sizes):
-            S_i = second_diff_penalty(sz, 1.0)
-            I_pre = np.eye(int(np.prod(sizes[:i])))
-            I_post = np.eye(int(np.prod(sizes[i + 1:])))
-            bases.append((np.kron(np.kron(I_pre, S_i), I_post), 1))
-        return bases
+        S_list = [second_diff_penalty(sz, 1.0) for sz in self.n_splines_per]
+        return [(B, 1) for B in _kron_blocks(S_list)]
 
 
 class _FactorTerm(_Term):
@@ -296,11 +289,11 @@ def instantiate_terms(
         t = cfg['type']
         feats = cfg['features']
         kw = dict(cfg['kwargs'])
-        term_order = kw.pop('spline_order', spline_order)
-        k_val = kw.pop('n_splines', kw.pop('k', None))
-        lam_val = kw.pop('lam', kw.pop('sp', None))
 
         if t == 's':
+            term_order = kw.pop('spline_order', spline_order)
+            k_val = kw.pop('n_splines', kw.pop('k', None))
+            lam_val = kw.pop('lam', kw.pop('sp', None))
             terms.append(_SplineTerm(
                 feats[0],
                 k_val if k_val is not None else 10,
@@ -309,6 +302,9 @@ def instantiate_terms(
                 constraint=kw.pop('constraint', None),
             ))
         elif t == 'te':
+            term_order = kw.pop('spline_order', spline_order)
+            k_val = kw.pop('n_splines', kw.pop('k', None))
+            lam_val = kw.pop('lam', kw.pop('sp', None))
             terms.append(_TensorTerm(
                 feats,
                 k_val if k_val is not None else 5,
@@ -316,12 +312,14 @@ def instantiate_terms(
                 term_order,
             ))
         elif t == 'f':
+            lam_val = kw.pop('lam', kw.pop('sp', None))
             terms.append(_FactorTerm(
                 feats[0],
                 lam_val if lam_val is not None else 1.0,
                 kw.pop('coding', 'one-hot'),
             ))
         elif t == 'l':
+            lam_val = kw.pop('lam', kw.pop('sp', None))
             terms.append(_LinearTerm(
                 feats[0],
                 lam_val if lam_val is not None else 0.0,

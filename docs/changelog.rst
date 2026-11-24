@@ -1,6 +1,21 @@
 Changelog
 =========
 
+Version 2.1.0
+-------------
+*Released 2026-11-24*
+
+* **Optional Plotting Dependency & Module Split**:
+  - Moved ``matplotlib>=3.5`` from core dependencies to ``[project.optional-dependencies]`` (``pip install magli[plot]``) and extracted plotting helpers into ``magli._plotting`` with lazy ``pyplot`` imports.
+  - Fixed the unreachable ``"tab10"`` colormap branch in ``plot_lingam_decomposition`` and routed ``bs='re'`` terms in ``WoodLinGAM.plot_decomposition`` to bar plots.
+* **Numerical Parity, Memory & Performance Fixes**:
+  - Added chunked thin-plate radial kernel evaluation (``_eta_1d_matmul``) to avoid large dense intermediates during fit and predict.
+  - Excluded zero-weight observations (``weights == 0``) consistently from ``n_obs``, degrees of freedom, ``GCV``, ``REML``, ``loglikelihood()``, and fit summary statistics across both backends.
+  - Fixed Eilers PIRLS covariance to use ``Vp = V_inv * scale**2`` (fixing spurious small p-values on constrained/heavily penalized noise), fixed ``is_unpen`` for penalized ``l()`` terms and ``_TensorTerm.lam`` synchronization, and added ``ThreadPoolExecutor`` chunking over ``lam`` grid candidates when ``n_jobs != 1``.
+  - Hardened Wood REML/GCV optimization with per-block ``Dp`` computation, ``S_unit`` penalty rank in term tests, scale-relative Cholesky / ``lstsq``+``eigvalsh`` fallbacks, and removal of artificial variance/SE floors.
+* **Input Validation Hardening**:
+  - Validated ``k``, ``m``, and strictly increasing ``knots`` across Wood spline builders, rejected ``ndim > 2`` inputs in ``_reshape_x()``, rejected invalid kwargs on ``l()``/``f()``, validated finite positive ``gamma`` and non-empty/finite ``lam``/``n_splines`` grids, fixed ``fit_intercept=False`` with one-hot factors regardless of term order, and cleared stale ``coef_`` on ``LinGAM.lam`` mutation.
+
 Version 2.0.0
 -------------
 *Released 2026-11-15*

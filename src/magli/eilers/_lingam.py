@@ -87,8 +87,10 @@ class LinGAM(GAMCore):
     @lam.setter
     def lam(self, val: float) -> None:
         val = float(val)
-        if val < 0:
-            raise ValueError("Smoothing parameter 'lam' must be non-negative.")
+        if not np.isfinite(val) or val < 0:
+            raise ValueError("Smoothing parameter 'lam' must be finite and non-negative.")
+        if val != self._term.lam:
+            self.coef_ = None
         self._term.lam = val
         self._term_configs[0]["kwargs"]["lam"] = val
 

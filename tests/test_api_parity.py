@@ -16,7 +16,7 @@ def test_import_and_factory():
     assert not hasattr(magli, "GAM")
     assert not hasattr(magli, "LinGAM")
     assert not hasattr(magli, "GAMCore")
-    assert magli.__version__ == "2.0.0"
+    assert magli.__version__ == "2.1.0"
 
     assert isinstance(WoodGAM(k=10), WoodLinGAM)
     assert isinstance(EilersGAM(n_splines=10), EilersLinGAM)
@@ -444,5 +444,123 @@ def test_audit_regressions_fixed():
     fig_co, axes_co = m_cat_only.plot_decomposition(X_str[:, :1], y_str)
     assert [t.get_text() for t in axes_co[0].get_xticklabels()] == ["ctrl", "treat"]
     plt.close(fig_co)
+
+
+@pytest.mark.parametrize("GAMCls", [EilersGAMCore, WoodGAMCore])
+def test_zero_residual_likelihood_and_diagnostics(GAMCls):
+    """Exact zero residuals return finite likelihood/IC and plot diagnostics without warnings."""
+    import warnings
+
+    x = np.linspace(0, 1, 20)
+    y = np.zeros(20)
+    m = GAMCls("l(0)").fit(x, y)
+    assert np.isfinite(m.loglikelihood())
+    assert np.isfinite(m.aic())
+    assert np.isfinite(m.bic())
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always", RuntimeWarning)
+        fig, _ = m.plot_diagnostics(x, y)
+    plt.close(fig)
+    assert not caught
+
+
+def test_wood_gridsearch_preserves_gamma_and_validates_nested_grids():
+    """Wood gridsearch preserves self.gamma when omitted and rejects mismatched grids."""
+    rng = np.random.default_rng(7)
+    X = rng.uniform(0, 1, (80, 2))
+    y = np.sin(2 * np.pi * X[:, 0]) + 0.5 * X[:, 1] + rng.normal(0, 0.1, 80)
+
+    m = WoodGAMCore("s(0) + s(1)", method="GCV", gamma=1.8).gridsearch(
+        X, y, n_splines_grids=[[5, 7], [5, 7]]
+    )
+    assert m.gamma == pytest.approx(1.8)
+
+    with pytest.raises(ValueError, match="Expected 2 grids"):
+        WoodGAMCore("s(0) + s(1)").gridsearch(X, y, n_splines_grids=[[5, 6]])
+
+    lg = WoodLinGAM(method="GCV", gamma=1.8).gridsearch(X[:, 0], y, n_splines=[6, 8])
+    assert lg.gamma == pytest.approx(1.8)
+
+    m_noint = WoodGAMCore("s(0) + s(1)", fit_intercept=False).gridsearch(
+        X, y, n_splines_grids=[[5, 6], [5, 6]]
+    )
+    assert [t.absorb_cons for t in m_noint._terms] == [False, True]
+    assert np.linalg.matrix_rank(m_noint._design_matrix_) == m_noint._design_matrix_.shape[1]
+
+
+@pytest.mark.parametrize("GAMCls", [EilersGAMCore, WoodGAMCore])
+def test_predict_wrong_1d_length_raises_value_error(GAMCls):
+    """Passing a mismatched 1D vector to a multi-feature model raises ValueError."""
+    rng = np.random.default_rng(11)
+    X = rng.uniform(0, 1, (30, 2))
+    y = X[:, 0] + X[:, 1]
+    m = GAMCls("s(0, k=5) + s(1, k=5)").fit(X, y)
+    with pytest.raises(ValueError):
+        m.predict(np.array([0.1, 0.2, 0.3]))
+
+
+@pytest.mark.parametrize("GAMCls", [EilersGAMCore, WoodGAMCore])
+def test_deviance_explained_matches_stats_on_tiny_y(GAMCls):
+    """deviance_explained() matches statistics_['deviance_explained'] even on tiny y ~ 1e-8."""
+    rng = np.random.default_rng(0)
+    x = np.linspace(0.0, 1.0, 80)
+    y = (x + rng.normal(0.0, 0.3, 80)) * 1e-8
+    m = GAMCls("l(0)").fit(x, y)
+    assert np.isclose(m.deviance_explained(), m.statistics_["deviance_explained"])
+
+
+def test_zero_weights_effective_sample_count():
+    """Zero weights exclude inactive observations from n_samples, scale, GCV, and loglikelihood."""
+    rng = np.random.default_rng(42)
+    x = np.linspace(0.0, 1.0, 100)
+    y = np.sin(2.0 * np.pi * x) + rng.normal(0.0, 0.1, 100)
+    w = np.r_[np.ones(50), np.zeros(50)]
+
+    for LinCls, GamCls in ((EilersLinGAM, EilersGAMCore), (WoodLinGAM, WoodGAMCore)):
+        m = LinCls(n_splines=8).fit(x, y, weights=w)
+        assert m.statistics_["n_samples"] == 50
+        assert np.isfinite(m.scale_)
+        assert np.isfinite(m.statistics_["GCV"])
+        assert np.isfinite(m.loglikelihood())
+
+        g_sub = GamCls("l(0)").fit(x[:50], y[:50])
+        g_zw = GamCls("l(0)").fit(x, y, weights=w)
+        assert g_zw.statistics_["n_samples"] == 50
+        assert np.isclose(g_zw.scale_, g_sub.scale_, rtol=1e-10)
+        assert np.isclose(g_zw.loglikelihood(), g_sub.loglikelihood(), atol=1e-10)
+
+
+def test_3d_predict_lam_reset_gamma_validation_and_docstrings():
+    """Reject 3D predict inputs, reset is_fitted on lam mutation, validate gamma, and check _base docstrings."""
+    import pathlib
+
+    rng = np.random.default_rng(21)
+    X = rng.uniform(0.0, 1.0, (40, 2))
+    y = np.sin(2.0 * np.pi * X[:, 0]) + 0.5 * X[:, 1] + rng.normal(0.0, 0.1, 40)
+
+    for LinCls, GamCls in ((EilersLinGAM, EilersGAMCore), (WoodLinGAM, WoodGAMCore)):
+        gm = GamCls("s(0, k=5) + s(1, k=5)").fit(X, y)
+        with pytest.raises(ValueError, match="1D or 2D"):
+            gm.predict(np.ones((4, 2, 1)))
+
+        lm = LinCls(n_splines=8).fit(X[:, 0], y)
+        assert lm.is_fitted
+        lm.lam = 5.0
+        assert not lm.is_fitted
+
+        for bad_gamma in (0.0, -1.5, np.nan):
+            with pytest.raises(ValueError, match="gamma"):
+                GamCls("s(0, k=5)").gridsearch(X[:, :1], y, gamma=bad_gamma)
+
+    for bad_gamma in (0.0, -1.5, np.nan):
+        with pytest.raises(ValueError, match="gamma"):
+            WoodGAMCore("s(0, k=5)", gamma=bad_gamma)
+        with pytest.raises(ValueError, match="gamma"):
+            WoodLinGAM(k=6).gridsearch(X[:, 0], y, gamma=bad_gamma)
+
+    base_bytes = pathlib.Path("src/magli/_base.py").read_bytes()
+    assert b"\x07" not in base_bytes
+    assert rb"\alpha" in base_bytes
+
 
 

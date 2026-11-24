@@ -4,11 +4,11 @@ Quick Start
 Installation
 ------------
 
-magli requires Python ≥3.8 and the following packages:
+magli requires Python ≥3.9 and the following packages:
 
 * ``numpy >= 1.20``
 * ``scipy >= 1.7``
-* ``matplotlib >= 3.5``
+* ``matplotlib >= 3.5`` *(optional, for plotting via ``pip install magli[plot]``)*
 
 Install from PyPI::
 

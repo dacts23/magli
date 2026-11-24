@@ -18,9 +18,9 @@
     "semantic_hash": "4d117621a6b5d25aa27c2d10ece12b10"
   },
   "docs/conf.py": {
-    "mtime": 1794722515.893695,
-    "seen": 1794722656.613078,
-    "ast_hash": "ea7bb5b8a524dd0d2cb917d5e25d7806",
+    "mtime": 1795503614.379942,
+    "seen": 1795503630.207281,
+    "ast_hash": "75286c0e9226515a0ae77f3bf0e835cc",
     "semantic_hash": ""
   },
   "examples/01_basic_lingam.py": {
@@ -114,21 +114,21 @@
     "semantic_hash": ""
   },
   "pyproject.toml": {
-    "mtime": 1794722514.3094077,
-    "seen": 1794722656.6131039,
-    "ast_hash": "d8806867c82681c15ecb8bef09111c8b",
+    "mtime": 1795503612.2150168,
+    "seen": 1795503630.2073123,
+    "ast_hash": "9983f22081cb8c106e45c55425b2c9eb",
     "semantic_hash": ""
   },
   "src/magli/__init__.py": {
-    "mtime": 1794722397.0475092,
-    "seen": 1794722656.6131053,
-    "ast_hash": "3edcd677f9310f42244ff28dc8dd762b",
+    "mtime": 1795503613.263554,
+    "seen": 1795503630.2073145,
+    "ast_hash": "29638eb684231f417c6fee7ef983bf6a",
     "semantic_hash": ""
   },
   "src/magli/_base.py": {
-    "mtime": 1794726365.0334322,
-    "seen": 1794726574.4364655,
-    "ast_hash": "57c5828c9bf9248f5f12215b415bea0f",
+    "mtime": 1795502001.4339154,
+    "seen": 1795503098.9888937,
+    "ast_hash": "5704e6c6951086d0012d0f7bed43cf19",
     "semantic_hash": ""
   },
   "src/magli/_formula.py": {
@@ -150,15 +150,15 @@
     "semantic_hash": ""
   },
   "src/magli/eilers/_gam.py": {
-    "mtime": 1794726390.3563998,
-    "seen": 1794726574.4364724,
-    "ast_hash": "2d5932bd2e698b7e64f947ecdde8da96",
+    "mtime": 1795502242.8644722,
+    "seen": 1795503098.9889035,
+    "ast_hash": "30ff163af287d143c9a394de725c7901",
     "semantic_hash": ""
   },
   "src/magli/eilers/_lingam.py": {
-    "mtime": 1794719613.921759,
-    "seen": 1794719790.6351194,
-    "ast_hash": "a70e3b6f2a14d6bb2c446cb92413bf6c",
+    "mtime": 1795502236.480793,
+    "seen": 1795503098.9889052,
+    "ast_hash": "5a31da3dc8626f79af8359017b20c61c",
     "semantic_hash": ""
   },
   "src/magli/eilers/_penalty.py": {
@@ -168,15 +168,15 @@
     "semantic_hash": ""
   },
   "src/magli/eilers/_solver.py": {
-    "mtime": 1794726361.069279,
-    "seen": 1794726574.4364772,
-    "ast_hash": "d3e37076ba32d45bc8e4d27fa4e3f080",
+    "mtime": 1795502233.80552,
+    "seen": 1795503098.988909,
+    "ast_hash": "bf4187372a6c498b1bfdd106fe628cd3",
     "semantic_hash": ""
   },
   "src/magli/eilers/_terms.py": {
-    "mtime": 1794724658.0933359,
-    "seen": 1794725352.2876377,
-    "ast_hash": "8b55c6f2c3aeb206a7cea71d35816ecc",
+    "mtime": 1795502235.280491,
+    "seen": 1795503098.9889104,
+    "ast_hash": "ceb2b8131cbc8c2a858eaf8ba9284c3b",
     "semantic_hash": ""
   },
   "src/magli/wood/__init__.py": {
@@ -186,57 +186,57 @@
     "semantic_hash": "d3e696a60f2d600a47184904eb66b728"
   },
   "src/magli/wood/_gam.py": {
-    "mtime": 1794726401.4574344,
-    "seen": 1794726574.4364822,
-    "ast_hash": "b2a9127c7ef78584faeae0e96ad99a0c",
+    "mtime": 1795502150.1768274,
+    "seen": 1795503098.9889138,
+    "ast_hash": "5137a5af6c4cdbdb8c24d054b85db031",
     "semantic_hash": ""
   },
   "src/magli/wood/_lingam.py": {
-    "mtime": 1794726402.6380594,
-    "seen": 1794726574.4364839,
-    "ast_hash": "3eb9a8d7dc3275ca6ecd865efa2f2d4c",
+    "mtime": 1795502154.5845125,
+    "seen": 1795503098.9889157,
+    "ast_hash": "41303ccaa9295fce152623e0eabca900",
     "semantic_hash": ""
   },
   "src/magli/wood/_optimizer.py": {
-    "mtime": 1794724867.6203399,
-    "seen": 1794725352.2876446,
-    "ast_hash": "84f0124f21a7465ac53f211cf08d9bf4",
+    "mtime": 1795503237.9727726,
+    "seen": 1795503292.155944,
+    "ast_hash": "442b49ffc33a3929f1572ae9aef762d5",
     "semantic_hash": ""
   },
   "src/magli/wood/_smooths.py": {
-    "mtime": 1794726446.109425,
-    "seen": 1794726574.4364872,
-    "ast_hash": "09c8e9f9b5df051f51a910c2ccaa9501",
+    "mtime": 1795502054.871436,
+    "seen": 1795503098.9889188,
+    "ast_hash": "7cd0eb1bbf106c5053abbd27c698dffa",
     "semantic_hash": ""
   },
   "src/magli/wood/_terms.py": {
-    "mtime": 1794724898.1715913,
-    "seen": 1794725352.287648,
-    "ast_hash": "d75cc612424074ab42c58cc144c5f5e3",
+    "mtime": 1795502145.6084845,
+    "seen": 1795503098.9889202,
+    "ast_hash": "793fe5a02d12d3c7cbef82b4c8538f0e",
     "semantic_hash": ""
   },
   "src/magli/wood/_tests.py": {
-    "mtime": 1793416045.747818,
-    "seen": 1793416072.8055334,
-    "ast_hash": "f8169b1c03840d964aa73c286ba01b7f",
+    "mtime": 1794786242.0618303,
+    "seen": 1794786341.5679202,
+    "ast_hash": "9fcaae40f27de9d7a3c3ac1e1c0d8928",
     "semantic_hash": ""
   },
   "tests/test_api_parity.py": {
-    "mtime": 1794726475.3185966,
-    "seen": 1794726574.4364922,
-    "ast_hash": "fbc1a43b401265d9c6733e6ca8705e7a",
+    "mtime": 1795503615.4034047,
+    "seen": 1795503630.207346,
+    "ast_hash": "bd86f66c6b525a04f23bd824274b60c2",
     "semantic_hash": ""
   },
   "tests/test_eilers_features.py": {
-    "mtime": 1794726522.9628892,
-    "seen": 1794726574.4364953,
-    "ast_hash": "fe0866b574d0788b2d234e6b8571e237",
+    "mtime": 1795503040.70936,
+    "seen": 1795503098.9889276,
+    "ast_hash": "8f11042bdf80ec8aa9cfa5e8529b90b5",
     "semantic_hash": ""
   },
   "tests/test_wood_bases.py": {
-    "mtime": 1794725889.8695612,
-    "seen": 1794725944.4265425,
-    "ast_hash": "9d2d5d698cbe77c4415a31c29d336091",
+    "mtime": 1795503041.9657345,
+    "seen": 1795503098.988929,
+    "ast_hash": "4a662d8ae9bf088490b1d45ffd885430",
     "semantic_hash": ""
   },
   "tests/test_wood_summary_vs_r.py": {
@@ -264,9 +264,9 @@
     "semantic_hash": ""
   },
   "docs/changelog.rst": {
-    "mtime": 1794726786.1924736,
-    "seen": 1794726968.4339643,
-    "ast_hash": "9d510ee8a4ca526ae7e1a2bac0c63a6c",
+    "mtime": 1795503616.5505154,
+    "seen": 1795503630.20736,
+    "ast_hash": "52ffae1557bc047bdd87f9dd791dca8e",
     "semantic_hash": ""
   },
   "docs/constraints.rst": {
@@ -348,9 +348,9 @@
     "semantic_hash": ""
   },
   "docs/quickstart.rst": {
-    "mtime": 1794722612.9879935,
-    "seen": 1794722656.613169,
-    "ast_hash": "04e2a46b54ff3424fc3f12ec7f444aa1",
+    "mtime": 1795501937.9273286,
+    "seen": 1795503098.9889627,
+    "ast_hash": "3a9822b97f294f0b463aadf0a5d223d0",
     "semantic_hash": ""
   },
   "examples/EXAMPLE_10_README.md": {
@@ -438,15 +438,21 @@
     "semantic_hash": "1ccfd4a1f625e194b2410497d180b31b"
   },
   ".github/workflows/test.yml": {
-    "mtime": 1794726434.7763965,
-    "seen": 1794726574.4364235,
-    "ast_hash": "861c7915b022dd585a454f414403b8cf",
+    "mtime": 1794727031.4245791,
+    "seen": 1794727055.1288092,
+    "ast_hash": "69c585afe316c04385f3cb2ae31f033c",
     "semantic_hash": ""
   },
   "tests/test_blind_spot_parity.py": {
     "mtime": 1794725891.1898332,
     "seen": 1794725944.4265394,
     "ast_hash": "1df7e9ec758cf60744465860bb7dd014",
+    "semantic_hash": ""
+  },
+  "src/magli/_plotting.py": {
+    "mtime": 1795501935.9286427,
+    "seen": 1795503098.9888978,
+    "ast_hash": "dd5593d2d879dc1b2c77367bb91ef742",
     "semantic_hash": ""
   }
 }

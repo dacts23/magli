@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
-from .._base import _khatri_rao
+from .._base import _khatri_rao, _kron_blocks
 from ..eilers._terms import _FactorTerm, _LinearTerm, _Term as _WoodTerm
 from ._smooths import (
     absorb_sum_to_zero_constraint,
@@ -14,6 +14,26 @@ from ._smooths import (
     predict_smooth_basis,
     rescale_penalty,
 )
+
+
+def _validate_by(by: Optional[int]) -> Optional[int]:
+    """Validate optional varying-coefficient feature index."""
+    if by is None:
+        return None
+    if not isinstance(by, (int, np.integer)) or isinstance(by, bool) or int(by) < 0:
+        raise ValueError("by must be a non-negative integer feature index.")
+    return int(by)
+
+
+def _cached_columns(term: Any, curr_cols: np.ndarray) -> Optional[np.ndarray]:
+    """Return cached compiled design block if curr_cols exactly matches training columns."""
+    if (
+        term._cached_cols is not None
+        and curr_cols.shape == term._cached_cols.shape
+        and np.array_equal(curr_cols, term._cached_cols)
+    ):
+        return term._cached_X
+    return None
 
 
 def _append_select_null_penalty(penalties: List[np.ndarray]) -> None:
@@ -68,13 +88,7 @@ class _WoodSplineTerm(_WoodTerm):
         )
         self.m = m
         self.knots = knots
-        if by is not None and (
-            not isinstance(by, (int, np.integer))
-            or isinstance(by, bool)
-            or int(by) < 0
-        ):
-            raise ValueError("by must be a non-negative integer feature index.")
-        self.by = int(by) if by is not None else None
+        self.by = _validate_by(by)
         self._Z: Optional[np.ndarray] = None
         self._penalties: List[np.ndarray] = []
         self._meta: Dict[str, Any] = {}
@@ -127,12 +141,9 @@ class _WoodSplineTerm(_WoodTerm):
         if self._Z is None:
             self.compile(x)
         curr_cols = self._extract_cols(x)
-        if (
-            self._cached_cols is not None
-            and curr_cols.shape == self._cached_cols.shape
-            and np.array_equal(curr_cols, self._cached_cols)
-        ):
-            return self._cached_X  # type: ignore[return-value]
+        cached = _cached_columns(self, curr_cols)
+        if cached is not None:
+            return cached
         B = predict_smooth_basis(col, self._meta) @ self._Z
         if self.by is not None:
             by_col = np.asarray(x[:, self.by], dtype=float).ravel()
@@ -205,16 +216,15 @@ class _WoodTensorTerm(_WoodTerm):
         self._user_sp: Optional[List[Optional[float]]] = (
             list(self.sp) if self.sp is not None else None
         )
-        if by is not None and (
-            not isinstance(by, (int, np.integer))
-            or isinstance(by, bool)
-            or int(by) < 0
-        ):
-            raise ValueError("by must be a non-negative integer feature index.")
-        self.by = int(by) if by is not None else None
+        self.by = _validate_by(by)
         if m is None:
             self.m_per = [None] * self.d
         elif isinstance(m, (list, tuple)):
+            if len(m) != self.d:
+                raise ValueError(
+                    f"m length ({len(m)}) must match number of features ({self.d}); "
+                    "pass a scalar or a per-axis list of length d."
+                )
             self.m_per = list(m)
         else:
             self.m_per = [m] * self.d
@@ -222,6 +232,10 @@ class _WoodTensorTerm(_WoodTerm):
         if knots is None:
             self.knots_per = [None] * self.d
         elif isinstance(knots, (list, tuple)):
+            if len(knots) != self.d:
+                raise ValueError(
+                    f"knots length ({len(knots)}) must match number of features ({self.d})."
+                )
             self.knots_per = list(knots)
         else:
             self.knots_per = [knots] * self.d
@@ -275,13 +289,7 @@ class _WoodTensorTerm(_WoodTerm):
             self._marginal_meta.append(meta_i)
 
         X_te = _khatri_rao(marg_X)
-        sizes = [m.shape[1] for m in marg_X]
-        TS_list = []
-        for i in range(self.d):
-            I_pre = np.eye(int(np.prod(sizes[:i])))
-            I_post = np.eye(int(np.prod(sizes[i + 1 :])))
-            P_i = np.kron(np.kron(I_pre, marg_S[i]), I_post)
-            TS_list.append(0.5 * (P_i + P_i.T))
+        TS_list = [0.5 * (P_i + P_i.T) for P_i in _kron_blocks(marg_S)]
 
         S_scaled, _ = rescale_penalty(X_te, TS_list)
         if self.by is not None:
@@ -305,12 +313,9 @@ class _WoodTensorTerm(_WoodTerm):
         if self._Z is None:
             self.compile(x)
         curr_cols = np.asarray(x[:, self.features + ([self.by] if self.by is not None else [])], dtype=float)
-        if (
-            self._cached_cols is not None
-            and curr_cols.shape == self._cached_cols.shape
-            and np.array_equal(curr_cols, self._cached_cols)
-        ):
-            return self._cached_X  # type: ignore[return-value]
+        cached = _cached_columns(self, curr_cols)
+        if cached is not None:
+            return cached
         cols = np.asarray(x[:, self.features], dtype=float)
         marg_X = [
             predict_smooth_basis(cols[:, i].ravel(), self._marginal_meta[i])
@@ -358,22 +363,29 @@ def instantiate_wood_terms(
     spline_order: int = 3,
 ) -> List[_WoodTerm]:
     """Instantiate Wood term objects from parsed formula config dicts."""
+    n_onehot = sum(
+        1
+        for cfg in configs
+        if cfg["type"] == "f" and cfg["kwargs"].get("coding", "dummy") == "one-hot"
+    )
+    if n_onehot > 0 and (fit_intercept or n_onehot > 1):
+        raise ValueError(
+            "f(..., coding='one-hot') in the Wood backend is collinear with the intercept "
+            "(or another one-hot factor); use coding='dummy', fit_intercept=False, or s(..., bs='re')."
+        )
     terms: List[_WoodTerm] = []
-    has_dropped_cons = fit_intercept
+    has_dropped_cons = fit_intercept or (n_onehot > 0)
     spline_order = int(spline_order)
     for cfg in configs:
         kind = cfg["type"]
         feats = cfg["features"]
         kw = dict(cfg["kwargs"])
 
-        default_k = 5 if kind in ("te", "ti") else 10
-        default_bs = "cr" if kind in ("te", "ti") else "tp"
-        k_val = kw.pop("k", kw.pop("n_splines", default_k))
-        sp_val = kw.pop("sp", kw.pop("lam", None))
-        bs_val = kw.pop("bs", default_bs)
-        by_val = kw.pop("by", None)
-
         if kind == "s":
+            bs_val = str(kw.pop("bs", "tp")).lower()
+            k_val = kw.pop("k", kw.pop("n_splines", 10))
+            sp_val = kw.pop("sp", kw.pop("lam", None))
+            by_val = kw.pop("by", None)
             absorb = True
             if not has_dropped_cons and by_val is None and bs_val != "re":
                 absorb = False
@@ -396,6 +408,10 @@ def instantiate_wood_terms(
                 )
             )
         elif kind in ("te", "ti"):
+            bs_val = kw.pop("bs", "cr")
+            k_val = kw.pop("k", kw.pop("n_splines", 5))
+            sp_val = kw.pop("sp", kw.pop("lam", None))
+            by_val = kw.pop("by", None)
             absorb = True
             if not has_dropped_cons and kind == "te" and by_val is None:
                 absorb = False
@@ -421,17 +437,9 @@ def instantiate_wood_terms(
                 )
             )
         elif kind == "f":
-            coding = kw.pop("coding", "dummy")
-            if coding == "one-hot":
-                if has_dropped_cons:
-                    raise ValueError(
-                        "f(..., coding='one-hot') in the Wood backend is collinear with the intercept; "
-                        "use coding='dummy', fit_intercept=False, or s(..., bs='re')."
-                    )
-                has_dropped_cons = True
             terms.append(
                 _WoodFactorTerm(
-                    feature=feats[0], coding=coding
+                    feature=feats[0], coding=kw.pop("coding", "dummy")
                 )
             )
         elif kind == "l":

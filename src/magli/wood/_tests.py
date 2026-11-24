@@ -127,6 +127,8 @@ def wood_test_stat(
     V = 0.5 * (V + V.T)
     ev, U = np.linalg.eigh(V)
     ev, U = ev[::-1], U[:, ::-1]
+    if ev.size == 0 or ev[0] <= 0.0:
+        return 0.0, 1.0, 0.0
     siv = np.where(U[0] == 0, 1.0, np.sign(U[0]))
     U = U * siv
 
@@ -137,6 +139,8 @@ def wood_test_stat(
     if r_est < k1:
         k1 = k = r_est
         nu, rank = 0.0, float(r_est)
+    if k1 == 0:
+        return 0.0, 1.0, 0.0
 
     vec = U[:, :k1] if k1 < U.shape[1] else U
     if nu > 0 and k > 0:

@@ -283,3 +283,59 @@ def test_eilers_huge_lam_and_gridsearch_flat_and_tensor_orders():
     assert g4._terms[0].n_splines_per[1] in (2, 3)
 
 
+def test_eilers_constrained_and_high_lam_noise_pvalues():
+    """Shape-constrained and large-lam Eilers models preserve SVD Vp so noise p-values stay non-significant."""
+    rng = np.random.default_rng(42)
+    x = np.linspace(0.0, 1.0, 100)
+    y_noise = rng.normal(0.0, 1.0, 100)
+
+    m_con = LinGAM(n_splines=10, lam=1.0, constraint="mono_inc").fit(x, y_noise)
+    assert m_con.statistics_["p_values_per_term"][0] > 0.05
+    assert np.all(np.isfinite(m_con.statistics_["Vp"]))
+    assert np.linalg.norm(m_con.statistics_["Vp"]) > 1.0
+
+    m_hi = LinGAM(n_splines=10, lam=1e8).fit(x, y_noise)
+    assert m_hi.statistics_["p_values_per_term"][0] > 0.05
+
+
+def test_eilers_gridsearch_partial_validation_and_parallel():
+    """Verify Eilers partial grid pinning, validation, tuple/tensor/linear handling, and parallel lam search."""
+    rng = np.random.default_rng(7)
+    X = rng.uniform(0.0, 1.0, (60, 2))
+    y = np.sin(2.0 * np.pi * X[:, 0]) + 0.5 * X[:, 1] + rng.normal(0.0, 0.1, 60)
+
+    g_part = GAMCore("s(0, n_splines=6) + s(1, n_splines=6)").gridsearch(
+        X, y, n_splines=[[8, 10], [12, 14]], search_terms=[0]
+    )
+    assert g_part._terms[0].n_splines in (8, 10)
+    assert g_part._terms[1].n_splines == 6
+
+    for bad_kwargs in (
+        {"lam": [-5.0, -1.0]},
+        {"lam": np.array([])},
+        {"lam": [[]]},
+        {"n_splines": np.array([])},
+    ):
+        with pytest.raises(ValueError):
+            GAMCore("s(0)").gridsearch(X[:, :1], y, **bad_kwargs)
+
+    g_tup = GAMCore("s(0) + s(1)").gridsearch(X, y, lam=([0.1, 1.0], [0.5, 5.0]))
+    assert g_tup.is_fitted
+
+    g_te = GAMCore("te(0, 1, n_splines=4, lam=1.0)").gridsearch(X, y, lam=[0.01, 10.0])
+    assert g_te._terms[0].lam == g_te._terms[0].lam_per[0]
+
+    g_l = GAMCore("l(0, lam=1000.0)").fit(X[:, :1], y)
+    assert g_l.statistics_["edf_per_term"][0] < 0.1
+
+    g_p1 = GAMCore("s(0) + s(1)").gridsearch(X, y, lam=np.logspace(-2, 2, 5), n_jobs=1)
+    g_p2 = GAMCore("s(0) + s(1)").gridsearch(X, y, lam=np.logspace(-2, 2, 5), n_jobs=2)
+    assert np.allclose(g_p1.coef_, g_p2.coef_)
+
+    with pytest.raises(ValueError, match="Unrecognised kwargs"):
+        GAMCore("l(0, k=10)")
+    with pytest.raises(ValueError, match="Unrecognised kwargs"):
+        GAMCore("f(0, spline_order=2)")
+
+
+
