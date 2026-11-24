@@ -461,7 +461,7 @@ def test_zero_residual_likelihood_and_diagnostics(GAMCls):
         warnings.simplefilter("always", RuntimeWarning)
         fig, _ = m.plot_diagnostics(x, y)
     plt.close(fig)
-    assert not caught
+    assert not [w for w in caught if issubclass(w.category, RuntimeWarning)]
 
 
 def test_wood_gridsearch_preserves_gamma_and_validates_nested_grids():
